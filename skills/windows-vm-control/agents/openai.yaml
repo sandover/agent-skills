@@ -1,0 +1,4 @@
+interface:
+  display_name: "Windows VM Development Guide"
+  short_description: "Guide a Windows VM agent through development"
+  default_prompt: "Use $windows-vm-control to prepare and guide a Windows VM agent through this development or testing task."

@@ -1,0 +1,164 @@
+#!/bin/zsh
+set -euo pipefail
+
+if (( $# < 1 )); then
+  print -u2 'usage: windows-vmrun <doctor|config-path|vmrun-command> [arguments...]'
+  exit 64
+fi
+
+config_root="${XDG_CONFIG_HOME:-${HOME}/.config}"
+config_path="${WINDOWS_VM_CONTROL_CONFIG:-${config_root}/windows-vm-control/config.json}"
+
+read_config() {
+  local key=$1
+  if [[ -f "$config_path" ]]; then
+    /usr/bin/plutil -extract "$key" raw -o - "$config_path" 2>/dev/null || true
+  fi
+}
+
+vmrun_path="${WINDOWS_VMRUN_PATH:-$(read_config vmrun_path)}"
+vmrun_path="${vmrun_path:-/Applications/VMware Fusion.app/Contents/Library/vmrun}"
+vmx_path="${WINDOWS_VM_VMX_PATH:-$(read_config vmx_path)}"
+guest_login="${WINDOWS_VM_GUEST_LOGIN:-$(read_config guest_login)}"
+guest_keychain_account="${WINDOWS_VM_GUEST_KEYCHAIN_ACCOUNT:-$(read_config guest_keychain_account)}"
+guest_keychain_service="${WINDOWS_VM_GUEST_KEYCHAIN_SERVICE:-$(read_config guest_keychain_service)}"
+vm_keychain_account="${WINDOWS_VM_UNLOCK_KEYCHAIN_ACCOUNT:-$(read_config vm_keychain_account)}"
+vm_keychain_service="${WINDOWS_VM_UNLOCK_KEYCHAIN_SERVICE:-$(read_config vm_keychain_service)}"
+
+command_name=$1
+shift
+
+if [[ "$command_name" == "config-path" ]]; then
+  print -r -- "$config_path"
+  exit 0
+fi
+
+keychain_item_exists() {
+  local account=$1
+  local service=$2
+  /usr/bin/security find-generic-password \
+    -a "$account" \
+    -s "$service" >/dev/null 2>&1
+}
+
+if [[ "$command_name" == "doctor" ]]; then
+  integer failures=0
+
+  if [[ -x "$vmrun_path" ]]; then
+    print -r -- "ok vmrun: $vmrun_path"
+  else
+    print -u2 -r -- "missing vmrun: $vmrun_path"
+    (( failures += 1 ))
+  fi
+
+  if [[ -f "$config_path" ]]; then
+    print -r -- "ok config: $config_path"
+  else
+    print -r -- "note config file absent; environment overrides may be in use: $config_path"
+  fi
+
+  if [[ -n "$vmx_path" && -f "$vmx_path" ]]; then
+    print -r -- "ok vmx: $vmx_path"
+  else
+    print -u2 -r -- "missing or invalid vmx_path"
+    (( failures += 1 ))
+  fi
+
+  if [[ -n "$guest_login" ]]; then
+    print -r -- "ok guest login configured: $guest_login"
+  else
+    print -u2 -r -- "missing guest_login"
+    (( failures += 1 ))
+  fi
+
+  if [[ -n "$guest_keychain_account" && -n "$guest_keychain_service" ]] &&
+    keychain_item_exists "$guest_keychain_account" "$guest_keychain_service"; then
+    print -r -- "ok guest credential in Keychain"
+  else
+    print -u2 -r -- "missing guest Keychain configuration or item"
+    (( failures += 1 ))
+  fi
+
+  if [[ -n "$vm_keychain_account" || -n "$vm_keychain_service" ]]; then
+    if [[ -n "$vm_keychain_account" && -n "$vm_keychain_service" ]] &&
+      keychain_item_exists "$vm_keychain_account" "$vm_keychain_service"; then
+      print -r -- "ok VM unlock credential in Keychain"
+    else
+      print -u2 -r -- "incomplete or missing VM unlock Keychain item"
+      (( failures += 1 ))
+    fi
+  else
+    print -r -- "note VM unlock credential not configured"
+  fi
+
+  if (( failures > 0 )); then
+    exit 78
+  fi
+  exit 0
+fi
+
+if [[ ! -x "$vmrun_path" ]]; then
+  print -u2 -r -- "vmrun not found: $vmrun_path"
+  exit 69
+fi
+
+vmrun_args=(-T fusion)
+vm_unlock=''
+guest_password=''
+
+cleanup_secrets() {
+  unset vm_unlock guest_password
+}
+trap cleanup_secrets EXIT
+
+if [[ -n "$vm_keychain_account" || -n "$vm_keychain_service" ]]; then
+  if [[ -z "$vm_keychain_account" || -z "$vm_keychain_service" ]]; then
+    print -u2 'both VM unlock Keychain account and service are required'
+    exit 78
+  fi
+  vm_unlock=$(
+    /usr/bin/security find-generic-password \
+      -a "$vm_keychain_account" \
+      -s "$vm_keychain_service" \
+      -w
+  )
+  vmrun_args+=(-vp "$vm_unlock")
+fi
+
+if [[ "$command_name" == "list" ]]; then
+  "$vmrun_path" "${vmrun_args[@]}" list "$@"
+  exit
+fi
+
+if [[ -z "$vmx_path" || ! -f "$vmx_path" ]]; then
+  print -u2 'vmx_path is missing or invalid; run windows-vmrun doctor'
+  exit 78
+fi
+
+needs_guest_credentials=false
+case "$command_name" in
+  runProgramInGuest|runScriptInGuest|deleteFileInGuest|fileExistsInGuest|\
+  renameFileInGuest|createDirectoryInGuest|deleteDirectoryInGuest|\
+  directoryExistsInGuest|listDirectoryInGuest|createTempFileInGuest|\
+  listProcessesInGuest|killProcessInGuest|copyFileFromHostToGuest|\
+  copyFileFromGuestToHost)
+    needs_guest_credentials=true
+    ;;
+esac
+
+if [[ "$needs_guest_credentials" == true ]]; then
+  if [[ -z "$guest_login" || -z "$guest_keychain_account" ||
+    -z "$guest_keychain_service" ]]; then
+    print -u2 'guest login and Keychain identifiers are required for this command'
+    exit 78
+  fi
+  guest_password=$(
+    /usr/bin/security find-generic-password \
+      -a "$guest_keychain_account" \
+      -s "$guest_keychain_service" \
+      -w
+  )
+  vmrun_args+=(-gu "$guest_login" -gp "$guest_password")
+fi
+
+"$vmrun_path" "${vmrun_args[@]}" "$command_name" "$vmx_path" "$@"
