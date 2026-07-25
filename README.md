@@ -1,15 +1,20 @@
 # Agent Skills
 
-Personal skills shared across Brandon's machines. Keep company, project, and
-tool-owned skills in the repository that owns them.
+Brandon's personal skills, shared across machines and available to both Codex
+and Claude.
 
-On a new machine, clone this repository to `~/src/agent-skills` and run:
+## Machine setup
 
-```bash
-./scripts/bootstrap.sh
-```
+Clone this repository to `~/src/agent-skills`. Use `~/.agents/skills` as the
+machine's skill registry, and make both `~/.codex/skills` and
+`~/.claude/skills` resolve to that registry.
 
-The script links personal skills into `~/.agents/skills`, makes Claude and
-Codex use that registry, and links the selected company and tool skills when
-their source repositories are present. It creates symlinks only and refuses to
-overwrite an existing path.
+Link skills into the registry from their actual source:
+
+- Personal skills come from this repository's `skills/` directory.
+- Company skills stay in the company skills repository.
+- Tool-bundled skills stay in the tool's repository.
+- Project skills stay in the project that owns them.
+
+Inspect the machine's existing skill directories before changing them. Preserve
+useful skills and avoid maintaining copied versions of source-owned skills.
