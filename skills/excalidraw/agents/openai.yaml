@@ -1,4 +1,0 @@
-interface:
-  display_name: "Excalidraw Diagram Generator"
-  short_description: "Generate architecture/system diagrams as .excalidraw files"
-  default_prompt: "Analyze this codebase and generate a valid .excalidraw architecture diagram that captures key components, boundaries, and data flow. Prefer a clear layout, accurate relationships, and labels that render correctly in Excalidraw."
