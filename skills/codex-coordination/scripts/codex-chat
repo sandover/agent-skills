@@ -1,0 +1,105 @@
+#!/bin/bash
+# Maintain per-machine Codex cursors for the shared Google Chat space.
+# `check` prints messages after an agent's local cursor without moving it.
+# `ack` records the newest message the agent has fully considered.
+# Chat remains the message store; this script writes only cursor resource IDs.
+# Each Mac keeps a distinct cursor for its chosen agent label.
+
+set -euo pipefail
+
+state_root="${XDG_STATE_HOME:-$HOME/.local/state}/google-chat-coordination"
+space="spaces/AAQAznFs6yc"
+account="${GOG_CHAT_ACCOUNT:-}"
+agent="Air"
+
+usage() {
+  cat <<'EOF'
+Usage: codex-chat [--account EMAIL] [--agent LABEL] <command> [argument]
+
+Commands:
+  check                     Print messages newer than this agent's cursor.
+  ack MESSAGE_RESOURCE      Mark messages through this resource as processed.
+EOF
+}
+
+die() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --account)
+      [ "$#" -ge 2 ] || die "--account requires an email address"
+      account="$2"
+      shift 2
+      ;;
+    --agent)
+      [ "$#" -ge 2 ] || die "--agent requires a label"
+      agent="$2"
+      shift 2
+      ;;
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+[ "$#" -ge 1 ] || {
+  usage
+  exit 1
+}
+
+case "$agent" in
+  ""|*[!A-Za-z0-9_-]*) die "--agent must use letters, numbers, hyphens, or underscores" ;;
+esac
+
+command_name="$1"
+shift
+agent_file=$(printf '%s' "$agent" | tr '[:upper:]' '[:lower:]')
+cursor_file="$state_root/$agent_file.cursor"
+
+case "$command_name" in
+  check)
+    [ "$#" -eq 0 ] || die "check takes no arguments"
+    [ -n "$account" ] || die "Set --account EMAIL or GOG_CHAT_ACCOUNT"
+    command -v gog >/dev/null 2>&1 || die "gog is required; install it and authenticate Chat access first"
+    command -v jq >/dev/null 2>&1 || die "jq is required"
+    last=""
+    [ -f "$cursor_file" ] && last=$(head -n 1 "$cursor_file")
+    messages_json=$(gog --readonly --json --account "$account" chat messages list "$space" --order 'createTime desc' --max 50)
+    if [ -n "$last" ] && ! printf '%s' "$messages_json" | jq -e --arg last "$last" '
+      any(.messages[]?; .resource == $last)
+    ' >/dev/null; then
+      die "Cursor is older than the latest 50 messages; inspect Chat and acknowledge an appropriate current message"
+    fi
+    new_messages=$(printf '%s' "$messages_json" | jq -c --arg last "$last" '
+      (.messages // []) as $messages
+      | if $last == "" then $messages
+        else ($messages | map(.resource) | index($last)) as $cursor
+        | $messages[0:$cursor]
+        end
+      | reverse
+      | .[]
+    ')
+    if [ -z "$new_messages" ]; then
+      printf 'No new messages for %s.\n' "$agent"
+    else
+      printf '%s\n' "$new_messages"
+    fi
+    ;;
+  ack)
+    [ "$#" -eq 1 ] || die "ack requires a message resource"
+    mkdir -p "$state_root"
+    printf '%s\n' "$1" > "$cursor_file"
+    printf 'Acknowledged through %s.\n' "$1"
+    ;;
+  *)
+    usage
+    exit 1
+    ;;
+esac

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Claude Review"
+  short_description: "Review artifacts with Claude"
+  default_prompt: "Use $claude-review to have Claude review the relevant artifacts and incorporate verified feedback."

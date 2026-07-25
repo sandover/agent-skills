@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Coordination"
+  short_description: "Coordinate Codex instances across machines"
+  default_prompt: "Use $codex-coordination to coordinate with Codex instances on other machines."

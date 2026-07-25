@@ -1,10 +1,15 @@
-# Codex Skills Repo
+# Agent Skills
 
-This repo is the canonical source for my Codex skills.
+Personal skills shared across Brandon's machines. Keep company, project, and
+tool-owned skills in the repository that owns them.
 
-The Codex app discovers skills via `~/.codex/skills`, which is a symlink to
-`~/src/codex-skills/skills`. Edit skills here and the app picks them up
-immediately.
+On a new machine, clone this repository to `~/src/agent-skills` and run:
 
-Layout:
-- `skills/`: one folder per skill (each contains `SKILL.md` and optional assets)
+```bash
+./scripts/bootstrap.sh
+```
+
+The script links personal skills into `~/.agents/skills`, makes Claude and
+Codex use that registry, and links the selected company and tool skills when
+their source repositories are present. It creates symlinks only and refuses to
+overwrite an existing path.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Draft APO Update"
+  short_description: "Draft concrete daily APO updates from real evidence"
+  default_prompt: "Use $draft-apo-update to draft today’s APO update."

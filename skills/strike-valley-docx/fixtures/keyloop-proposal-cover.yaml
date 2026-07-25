@@ -1,0 +1,50 @@
+document:
+  title: |-
+    Proposal for Initial Assessment:
+    Keyloop GTM+ AI
+  prepared_label: "prepared for:"
+  prepared_name: Megan Harvey
+  prepared_role: Chief Revenue Officer
+  date: 19 Feb 2026
+  version: v1.0
+
+branding:
+  logo: ../assets/sun-solid@512.png
+  studio_name_lines:
+    - STRIKE VALLEY
+    - STUDIO
+  website_text: strikevalley.studio
+  website_url: https://strikevalley.studio
+  location: Los Angeles, California
+
+style:
+  title_font: Eurostile
+  studio_font: Eurostile Bold
+  label_font: Eurostile
+  body_font: IBM Plex Sans
+  mono_font: Inconsolata
+  text_color: "111111"
+  muted_color: "8A8A8A"
+  link_color: "1C3E8C"
+  accent_color: "1B5E89"
+  page_background: "FAF8F2"
+  page_numbers: true
+  body_size_pt: 11
+
+layout:
+  left_column_in: 2.15
+  right_column_in: 5.2
+
+cover_rows:
+  - label: goal
+    paragraphs:
+      - Identify where AI can reduce seller admin burden and improve deal execution across Keyloop's GTM org. Deliver a prioritized roadmap aligned to near-term, measurable impact.
+  - label: context
+    paragraphs:
+      - Keyloop's GTM teams likely spend significant time on activities that surround the deal — meeting prep, note-taking, CRM updates, follow-up planning — rather than on the deal itself. AI capabilities have matured to the point where much of this surrounding work can be automated or augmented, freeing sellers to focus on what actually moves revenue.
+      - This assessment will evaluate where Keyloop's GTM org stands today, what tools and workflows are already in place, and where targeted AI adoption can create the most immediate value.
+  - label: methodology
+    heading: Discovery interviews (8-10 hours)
+    heading_color: "1B5E89"
+    paragraphs:
+      - Interview selected members of the GTM staff — sellers, sales managers, enablement, and RevOps — to gather firsthand evidence on common workflows, inefficiencies, pain points, and opportunities.

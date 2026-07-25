@@ -1,124 +1,53 @@
 ---
 name: napkin
 description: |
-  Maintain a per-repo napkin file that tracks mistakes, corrections, and
-  what works. Activates EVERY session, unconditionally. Read the napkin
-  before doing anything. Write to it continuously as you work — not just at
-  session boundaries. Log your own mistakes, not just user corrections. The
-  napkin lives in the repo at `.scratch/napkin.md`.
-author: Codex
-version: 5.0.3
-date: 2026-02-17
+  Per-repo durable rules file. Always active. Read before working, write only
+  rules that pass the admission test, keep it under 80 lines.
+  Lives at `.scratch/napkin.md`.
 ---
 
 # Napkin
 
-You maintain a per-repo markdown file that tracks mistakes, corrections, and
-patterns that work or don't. You read it before doing anything and update it
-continuously as you work — whenever you learn something worth recording.
+A per-repo file of **durable rules** that change your behavior in future
+sessions. Always active — no trigger required.
 
-**This skill is always active. Every session. No trigger required.**
+## Mechanics
 
-## Session Start: Read Your Notes
+1. **Read** `.scratch/napkin.md` at session start. Apply silently.
+2. **Write** when something clears the admission test (below). Write it as a
+   rule, not a story.
+3. **Compress** before ending any session where you wrote to it. If it's over
+   80 lines when you open it, compress first.
 
-First thing, every session — read `.scratch/napkin.md` before doing anything
-else. Internalize what's there and apply it silently. Don't announce that you
-read it. Just apply what you know.
+If no napkin exists, create one with sections that fit the repo. Typical:
+`Rules`, `User Preferences`, `Environment Facts`, `Mistakes to Avoid`.
 
-If no napkin exists yet, create one at `.scratch/napkin.md`
+## Admission Test
 
-```markdown
-# Napkin
+Before adding anything, ask:
 
-## Corrections
-| Date | Source | What Went Wrong | What To Do Instead |
-|------|--------|----------------|-------------------|
+> "Would a future session behave differently just from reading this — before
+> inspecting the repo?"
 
-## User Preferences
-- (accumulate here as you learn them)
+No → don't write it.
 
-## Patterns That Work
-- (approaches that succeeded)
+## How to Write
 
-## Patterns That Don't Work
-- (approaches that failed and why)
+- **Rules, not narration.** State what is true, not how you learned it.
+  - ✅ "Always use absolute imports from `src/`."
+  - ❌ "User corrected my import style today."
+- **Replace, don't append.** New info supersedes old → rewrite, don't add
+  a second bullet.
+- **Repo-specific only.** General knowledge doesn't belong here.
+- **Concrete.** "The API returns `{items: [...]}`, not a bare list."
+- **No secrets, no logs, no session history, no task/epic IDs.**
 
-## Domain Notes
-- (project/domain context that matters)
-```
+## What Never Belongs
 
-Adapt the sections to fit the repo's domain. Design something you can usefully
-consume.
+Session chronology. "Created file X." Transition-state narration. One-off
+discoveries. General shell trivia (unless it repeatedly bites you *here*).
 
-## Continuous Updates
+## Limits
 
-Update the napkin as you work, not just at session start and end. Write to
-it whenever you learn something worth recording:
-
-- **You hit an error and figure out why.** Log it immediately. Don't wait.
-- **The user corrects you.** Log what you did and what they wanted instead.
-- **You catch your own mistake.** Log it. Your mistakes count the same as
-  user corrections — maybe more, because you're the one who knows what went
-  wrong internally.
-- **You try something and it fails.** Log the approach and why it didn't work
-  so you don't repeat it.
-- **You try something and it works well.** Log the pattern.
-- **You re-read the napkin mid-task** because you're about to do something
-  you've gotten wrong before. Good. Do this.
-
-The napkin is a living document. Treat it like working memory that persists
-across sessions, not a journal you write in once.
-
-## What to Log
-
-Log anything that would change your behavior if you read it next session:
-
-- **Your own mistakes**: wrong assumptions, bad approaches, misread code,
-  failed commands, incorrect fixes you had to redo.
-- **User corrections**: anything the user told you to do differently.
-- **Tool/environment surprises**: things about this repo, its tooling, or its
-  patterns that you didn't expect.
-- **Preferences**: how the user likes things done — style, structure, process.
-- **What worked**: approaches that succeeded, especially non-obvious ones.
-
-Be specific. "Made an error" is useless. "Assumed the API returns a list but
-it returns a paginated object with `.items`" is actionable.
-
-## What Not to Log
-
-Keep the napkin safe to store in the repo:
-
-- Don’t record secrets (API keys, tokens, passwords), private URLs, or internal
-  credentials.
-- Don’t paste large stack traces or logs; summarize the failure and the fix in
-  one line, and point to a command/file instead.
-
-## Napkin Maintenance
-
-Every 5-10 sessions, or when the file exceeds ~150 lines, consolidate:
-
-- Merge redundant entries into a single rule.
-- Promote repeated corrections to User Preferences.
-- Remove entries that are now captured as top-level rules.
-- Archive resolved or outdated notes.
-- Keep total length under 200 lines of high-signal content.
-
-A 50-line napkin of hard-won rules beats a 500-line log of raw entries.
-
-## Example
-
-**Early in a session** — you misread a function signature and pass args in the
-wrong order. You catch it yourself. Log it:
-
-```markdown
-| 2026-02-06 | self | Passed (name, id) to createUser but signature is (id, name) | Check function signatures before calling, this codebase doesn't follow conventional arg ordering |
-```
-
-**Mid-session** — user corrects your import style. Log it:
-
-```markdown
-| 2026-02-06 | user | Used relative imports | This repo uses absolute imports from `src/` — always |
-```
-
-**Later** — you re-read the napkin before editing another file and use
-absolute imports without being told. That's the loop working.
+Keep it under 80 lines of content. A 30-line napkin of hard-won rules beats
+a 300-line log.

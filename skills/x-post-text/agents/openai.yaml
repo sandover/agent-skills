@@ -1,0 +1,4 @@
+interface:
+  display_name: "X Post Text"
+  short_description: "Extract just the text of X/Twitter posts"
+  default_prompt: "Use $x-post-text to fetch only the text and core metadata for this list of X/Twitter post URLs or IDs through my authenticated Chrome session."

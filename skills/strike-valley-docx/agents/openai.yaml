@@ -1,0 +1,4 @@
+interface:
+  display_name: "Strike Valley DOCX"
+  short_description: "Convert Markdown into branded DOCX"
+  default_prompt: "Use $strike-valley-docx to turn this Markdown into a polished, editable consultancy Word document."

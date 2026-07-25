@@ -1,4 +1,0 @@
-interface:
-  display_name: "Ergo Feature Planning"
-  short_description: "Plan features as ergo epics/tasks with deps and validation gates"
-  default_prompt: "Turn this feature request into an ergo plan captured in ergo epics/tasks: draft right-sized tasks to expose unknowns, escalate judgment calls as they emerge (record decisions/open questions/assumptions in ergo), use `spike:`-prefixed tasks for analysis/decisions, include validation gates and (optionally) a commit expectation for code-changing tasks, minimize manual verification but specify it when required, sequence dependencies, then do a second-pass staff-level critique and improve the plan."
