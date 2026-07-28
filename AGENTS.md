@@ -1,2 +1,2 @@
-This repository inherits global agent policy from `/Users/brandonharvey/AGENTS.md`.
-Keep this file limited to agent-skills-specific deltas.
+This repository adds agent-skills-specific instructions to the shared global
+policy in `~/.config/AGENTS.md`.
