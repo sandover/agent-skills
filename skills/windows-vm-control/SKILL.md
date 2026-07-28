@@ -1,167 +1,187 @@
 ---
 name: windows-vm-control
-description: Guide a Codex agent running in a VMware Fusion Windows VM through the full lifecycle of remote Windows software development and testing from a macOS host. Use for VM readiness, PowerShell and Codex setup, authentication, repository and branch setup, delegated implementation and debugging, Windows UI or UAC intervention, evidence collection, and clean handoff.
+description: Communicate with and delegate tasks to a fellow Codex agent in a VMware Fusion Windows VM. Use for Windows administration, project setup, software development and testing, authentication, repository work, VMware Fusion management, Windows interface observation, and User Account Control.
 ---
 
-# Windows VM development guide
-
-Use a Codex instance inside a VMware Fusion Windows guest to own Windows-native
-development and testing. Treat `scripts/windows-vmrun` as the deterministic
-host control path and Plasmite (an interprocess communication system) as the normal coordination path.
-
-Read [configuration.md](references/configuration.md) during first-time setup or
-when moving this workflow to another Mac or VM. Read
-[plasmite-protocol.md](references/plasmite-protocol.md) whenever establishing
-or repairing the message channel.
+# Windows VM peer-agent guide
 
 ## Roles
 
-- **Guide**: the Codex instance on macOS -- this is you. You own readiness, delegation,
-  coordination, user communication, and host-only VM control.
-- **VM agent**: the Codex instance inside the VM. It owns that machine, its
-  separate repository clone, Windows implementation, builds, installation,
-  debugging, testing, and evidence.
-- **User**: retains decisions about permissions, credentials, material
-  ambiguity, and one-way doors.
+- **Guide**: this is you, the agent on the host Mac. You own delegation, user communication, and
+  access to the VM.
+- **VM agent**: the Codex instance inside the VM. It owns the VM, its repositories,
+  and work performed there.
 
-The VM agent resembles a subagent but is a separate-machine collaborator with
-its own filesystem, credentials, processes, repository state, and elevated
-capabilities. Do not treat it as a remote shell.
+Treat the VM agent as a capable peer on a persistent workstation, not as a
+remote shell. Delegate outcomes and let it solve problems itself. There is a simple message channel where the two of you can communicate.
 
-## Ask before starting
+As guide, you can inspect or control VMware Fusion via Computer Use, osascript, or VMWare Guest Operations when that will unblock or materially accelerate the VM agent, for example, clicking through a UAC prompt. The user retains decisions about
+credentials, permissions, serious ambiguity, and hard-to-reverse actions.
 
-Ask once for any missing model, reasoning, and speed choices. Resolve the model
-against Codex's actual menu or catalog; do not pass informal shorthand
-literally or silently substitute a model.
+## Typical flow
 
-## Lifecycle and phase gates
+- Connect to the VM
+- Start or ensure the agent
+- Handshake with it
+- Delegate a task
+- Collaborate
+- Verify
+- Close
 
-Use this state model:
+These are landmarks, not mandatory gates. Combine or skip them as makes sense.
 
-`Contract -> Access -> Agent launched -> Handshake -> Ready -> Instructed -> Working -> Verified -> Closed`
+## Communication
 
-Do not combine handshake with project setup or task execution. Require one
-concise receipt before each transition. Treat the mutual decision stop as an
-interrupt available in every phase.
+Plasmite is a CLI and library for sending and receiving JSON messages through persistent, disk-backed channels called "pools", which are ring buffers. For IPC across machine boundaries, `plasmite serve` exposes local pools securely and runs an MCP server.
 
-Record each phase's start, end, and elapsed time. Distinguish normal work,
-waiting, and recovery so later comparisons identify worthwhile acceleration
-work without adding continuous telemetry.
+Use a Plasmite pool as your communication channel with the VM agent. The user can observe this channel via `plasmite follow {poolname}`. By convention create and use the pool "codex-bridge" but another pool could be created if necessary.
 
-### 1. Contract
+You use the plasmite CLI installed on the host machine; if it's missing, let the user know. "plasmite serve" should be running on this machine as a persistent launchd service. The VM agent connects via MCP.
 
-Agree with the user on the task outcome, model, reasoning level, speed,
-permissions, exclusions, and stop conditions. Record which Git operations,
-installation, UI control, UAC actions, builds, tests, and external writes are
-authorized.
+### Commands
 
-Gate: the guide can state the task and authority without guessing.
+#### Create the pool
+`plasmite pool create codex-bridge`
 
-### 2. Access
+#### Send a message 
+`plasmite feed codex-bridge --tag host-guide '{"msg":"Hello. Reply here when ready."}'`
 
-Run `scripts/windows-vmrun doctor`, resolve the intended VM without guessing,
-and verify VMware Tools and guest reachability. Use Guest Operations while
-Windows is locked for non-UI work. Read
-[configuration.md](references/configuration.md) when setup or credentials are
-missing.
+#### Read recent context and continue watching
+`plasmite follow codex-bridge --tail 5`
 
-Gate: the guide can reach the intended VM through one known control path.
+#### Wait for one new message but time out after a minute
+`plasmite follow codex-bridge --timeout 60s --format jsonl`
 
-### 3. Launch one VM agent
+- Sign your messages with a tag so provenance is clear.
+- Don't invent schema; keep things simple, cheap, cheerful and fast. 
+- Read all message traffic, don't filter.
+- Metadata is optional, not a protocol.
+- For a new or uncertain session, send a brief hello and expect an acknowledgment
+  through Plasmite as proof of live connection. Include the launcher-selected
+  model settings in the hello.
+- Keep idle waiting cheap and quiet. Resume promptly after an empty wait.
+- Treat a polling timeout as normal. Do not start another shell because of one.
 
-Use Guest Operations to install or repair PowerShell and Codex when needed.
-Reuse guest-local Codex authentication; involve the user only at an actual
-login, MFA, password, or secret boundary.
+Use `scripts/windows-vmrun` to establish access or help with the VM directly.
+Read [configuration.md](references/configuration.md) for first-time setup or a
+new host or VM.
 
-Keep one Codex installation owner. For the official PowerShell installation,
-update from a separate process after stopping Codex; do not select the
-in-session updater or add Winget. Launch one owned PowerShell/Codex tree and
-record its PID, session ID when available, configuration, and initial pool
-cursor.
+## VM agent working model
 
-Gate: exactly one owned VM-agent process tree is running, and the guide knows
-how to identify and stop it.
+The VM agent is interactive, not a background service. It can receive a new
+Plasmite message only while a Codex turn is active and checking the pool.
 
-### 4. Complete a side-effect-free handshake
+Treat one open assignment as one continuing turn:
 
-Read and follow [plasmite-protocol.md](references/plasmite-protocol.md). Pass
-the VM-agent bootstrap prompt to `codex exec` through stdin; Windows
-command-line quoting is not reliable for a long prompt.
+1. Read and acknowledge the handoff.
+2. Work independently and report meaningful progress.
+3. If the assignment is still open, wait for another Plasmite message. After a
+   timeout, wait again.
+4. Before ending the turn, send a result or blocker through Plasmite.
 
-Send `hello` before any project instruction. Continue only after a matching
-`hello_ack` proves both message directions, identity, configuration, cursor,
-and stop conditions. If it does not match, remain in Handshake and debug that
-layer only.
+No new message is not a reason to end the turn. End it only when the assignment
+is complete, the guide must involve the user, or the guide says to stop.
 
-Gate: the guide has observed a valid `hello_ack` over Plasmite.
+## Brief the VM agent
 
-### 5. Establish project readiness
+When starting or materially redirecting the VM agent, make sure it understands
+its context and its tasks. If its existing conversation has the relevant context, you can leverage that.
 
-Send readiness separately from the task. Let the VM agent prepare its own
-checkout and toolchain: clone or safely reconcile the repo, read its
-instructions, prove remote access, select the intended branch or commit, and
-install missing prerequisites. Preserve unrelated changes.
+Use this compact handoff:
 
-For Ergo projects, match host and guest versions and assign one backlog writer
-at a time. Require a readiness receipt with repo, branch, HEAD, dirty state,
-remote access, relevant tool versions, and gaps.
+- **Outcome:** State what the VM agent must accomplish.
+- **Proof:** State the evidence that will show completion.
+- **Boundaries:** State the important exclusions and stop conditions.
+- **Authority:** State which installs, Git changes, UI actions, and other
+  effects are already authorized.
 
-Gate: the guide has observed a readiness receipt and accepted or resolved every
-reported gap.
+Include only task-specific facts. Let the VM agent choose the method.
 
-### 6. Instruct
+Tell the VM agent that it should do all the following:
 
-Send a self-contained task with outcome, Definition of Done, authority,
-exclusions, evidence, cleanup, and feedback requirements. Require `task_ack`
-that briefly restates the outcome, boundaries, and stop conditions.
+- Own its task end to end. It can use its judgment and do the Git, setup, build,
+  install, debug, test, and evidence work inside the VM.
+- Follow the working model above for the life of the assignment.
+- BEFORE knowingly triggering an approval, UAC, login, or other permission
+  prompt, notify you (the guide) with a plasmite message so a quiet channel is not mistaken for a stalled agent.
+- Put related, low-risk checks in one command when this reduces interruptions.
+- Use the narrowest check that can answer the current question. Do not run a
+  broad search when a bounded check can distinguish the likely causes.
+- Stop and ask you (the guide) when credentials, permission, consequential ambiguity,
+  or a hard-to-reverse decision requires the user.
+- Keep secrets out of messages. 
 
-After acceptance, the VM agent owns the Windows problem. Do not duplicate its
-engineering from macOS.
+## Choose your control path
 
-Gate: the guide has observed a correct `task_ack`.
+In general, use `windows-vmrun` to establish, inspect, repair, or stop the VM agent. Use
+Plasmite to communicate with a running VM agent.
 
-### 7. Execute and observe
+| Current state | Action |
+| --- | --- |
+| No PowerShell and no Codex | Use `windows-vmrun runProgramInGuest` to start one interactive PowerShell/Codex tree. Then handshake through Plasmite. |
+| PowerShell with a responsive Codex | Communicate through Plasmite. Do not launch or type into PowerShell. |
+| PowerShell with Codex but no Plasmite response | Check the Plasmite service first. Then use `windows-vmrun` once to inspect the process and capture the screen. Do not start another agent. |
+| Codex is waiting at its input prompt | Its previous turn ended, so it cannot poll. Use one authorized direct input or restart the standard launcher to begin a continuing turn. Then return to Plasmite. |
+| Task-owned PowerShell with no Codex | Close that exact idle PowerShell with `windows-vmrun`. Then run the standard launcher. Do not paste a launcher into the shell. |
+| Unrelated PowerShell with no Codex | Preserve it. Run the standard launcher to create a separate, identifiable task-owned tree. |
+| Multiple Codex processes | Identify the responsive, task-owned agent. Stop only duplicate task-owned processes. Do not create another. |
+| Codex running without PowerShell | Use it if it responds through Plasmite. If its interactive state is uncertain, stop that exact task-owned process and use the standard launcher. |
+| Plasmite service is down | Repair or restart Plasmite. Do not restart a healthy VM agent because its message channel is unavailable. |
+| VM is stopped, locked, or unreachable | Use `windows-vmrun` to inspect or restore access. Ask the user only at a real login or credential boundary. |
+| UAC, login, or another visible prompt | Expect the VM agent to notify you first. Use `captureScreen` or authorized direct VM control. Do not launch another shell. |
 
-Use Plasmite as the primary trace. Expect sparse milestone messages, not shell
-transcripts. If a deadline passes, inspect the one owned process and its
-redacted event log; inspect the screen only when a visible prompt is plausible.
-Distinguish work, UAC, authentication, crash, and exit before intervening.
 
-Ask once at a meaningful midpoint what was clear, what caused uncertainty, and
-the single highest-value workflow or MCP improvement.
+## Fast path
 
-Gate: the VM agent reports that execution and agreed checks are complete.
+Use this as a speed rail, not a mandatory ceremony:
 
-### 8. Apply the mutual decision stop
+1. For a new or uncertain session, send a brief hello. Account for existing
+   task-owned processes before starting anything.
+2. When the table calls for a launch, reuse one verified launcher. Fill in the
+   values in this disposable-VM recipe:
 
-For missing permission, material ambiguity, authentication or security
-boundaries, or a one-way-door decision, both agents stop related work. The VM
-agent sends `needs_user`; the guide gets the user's decision and explicitly
-resumes the prior phase. Do not re-ask when existing authorization clearly
-answers the question.
+   ```bash
+   scripts/windows-vmrun runProgramInGuest \
+     -noWait -activeWindow -interactive \
+     'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' \
+     -NoExit -NoProfile -Command \
+     "& '<CODEX_EXE>' resume '<SESSION_ID>' --dangerously-bypass-approvals-and-sandbox -C '<PROJECT_DIR>' -m '<MODEL>' -c 'model_reasoning_effort=\"<EFFORT>\"' -c 'check_for_update_on_startup=false' 'Check codex-bridge and acknowledge the guide. Keep this turn active while the assignment is open: work, report meaningful progress, and wait again after an empty Plasmite wait. Send a result or blocker before ending.'"
+   ```
 
-### 9. Verify and hand off
+   Use a Codex path verified in the interactive user context. Remove
+   `resume '<SESSION_ID>'` to start a new conversation. Remove
+   `--dangerously-bypass-approvals-and-sandbox` unless the user authorized
+   maximum permissions for an isolated or disposable VM. The flag removes tool
+   prompts, not the decision stop.
+3. Require a clear reply through Plasmite as proof of startup; do not require a
+   particular message shape. A sent instruction is not proof that the agent
+   received or acted on it. If no reply arrives promptly, inspect that process
+   and screen once. If the launcher used the wrong environment or cannot find
+   Codex, stop exploring alternatives and report the failure.
+4. Ask for model settings only when no applicable choice is already known.
+   Skip a separate readiness check unless setup is substantial or uncertain.
+5. When resuming an interactive Codex session, skip its in-session updater and
+   use the recorded session directory unless the task needs another checkout.
+6. Before a bounded UI test, clear an expected application login once. Ask the
+   user only when the login actually requires user action.
 
-Require a final receipt covering outcome, limitations, Git state, checks and
-evidence, installed or environment changes, running processes, and cleanup.
-Verify proportionally; a sent message or zero exit code alone is not proof.
+## Guardrails
 
-Gate: the Definition of Done is supported by evidence, and remote or local Git
-state matches the authorization.
-
-### 10. Close and learn
-
-Collect final process feedback. Stop the exact owned agent, close task-specific
-processes, and report what remains. Leave a polling agent only intentionally.
-
-Gate: the guide has a cleanup receipt and no unexplained process, repository,
-or installation state remains.
-
-## Security and reliability
-
-- Keep secrets in host and guest credential stores, never prompts, messages,
-  transcripts, repositories, or shell tracing.
-- Use Plasmite instead of the shared clipboard.
-- Resolve exact targets before overwrite, termination, snapshot, reset,
-  deletion, or restoration.
-- Treat reset, snapshot restoration, deletion, and power-off as destructive.
+- A Guest Operations process can have different credentials, environment, and
+  desktop state from the VM agent. Use interactive mode and a verified explicit
+  path; a background-process failure does not prove that the interactive agent
+  has the same problem.
+- Use Guest Operations to launch the interactive agent. Do not use it as a
+  second agent runtime.
+- Record the start and end of a large wait so you can tell the user how long things took, so that we can continuously improve on the efficiency of this process.
+- Keep host and VM secrets in credential stores, not Plasmite or the clipboard.
+- After one unexpectedly quiet wait during visible work, run
+  `scripts/windows-vmrun captureScreen <HOST_OUTPUT.png>` once. Check for an
+  approval or login prompt. Do not start another shell because the message
+  channel is quiet.
+- If the capture is black, check whether the guest is asleep or locked. Bring Fusion forward, send one harmless wake
+  input, and retry the capture. If it remains black, stop and report the
+  problem. Do not try another control path.
+- Treat snapshot restoration, reset, deletion, and power-off as destructive.
+- While the workflow is evolving, note large delays and occasionally ask the VM
+  agent what could be simplified.

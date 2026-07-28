@@ -52,7 +52,12 @@ if [[ "$command_name" == "doctor" ]]; then
   fi
 
   if [[ -f "$config_path" ]]; then
-    print -r -- "ok config: $config_path"
+    if /usr/bin/plutil -convert xml1 -o /dev/null -- "$config_path"; then
+      print -r -- "ok config: $config_path"
+    else
+      print -u2 -r -- "invalid config: $config_path"
+      (( failures += 1 ))
+    fi
   else
     print -r -- "note config file absent; environment overrides may be in use: $config_path"
   fi
@@ -141,7 +146,7 @@ case "$command_name" in
   renameFileInGuest|createDirectoryInGuest|deleteDirectoryInGuest|\
   directoryExistsInGuest|listDirectoryInGuest|createTempFileInGuest|\
   listProcessesInGuest|killProcessInGuest|copyFileFromHostToGuest|\
-  copyFileFromGuestToHost)
+  copyFileFromGuestToHost|captureScreen)
     needs_guest_credentials=true
     ;;
 esac
