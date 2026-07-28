@@ -1,4 +1,4 @@
 interface:
-  display_name: "Windows VM Development Guide"
-  short_description: "Guide a Windows VM agent through development"
-  default_prompt: "Use $windows-vm-control to prepare and guide a Windows VM agent through this development or testing task."
+  display_name: "Windows VM Control"
+  short_description: "Control Windows from a host Mac agent"
+  default_prompt: "Use $windows-vm-control to run this Windows task from the host, delegating to a guest agent or using desktop control only when needed."

@@ -146,7 +146,7 @@ case "$command_name" in
   renameFileInGuest|createDirectoryInGuest|deleteDirectoryInGuest|\
   directoryExistsInGuest|listDirectoryInGuest|createTempFileInGuest|\
   listProcessesInGuest|killProcessInGuest|copyFileFromHostToGuest|\
-  copyFileFromGuestToHost|captureScreen)
+  copyFileFromGuestToHost|captureScreen|typeKeystrokesInGuest)
     needs_guest_credentials=true
     ;;
 esac

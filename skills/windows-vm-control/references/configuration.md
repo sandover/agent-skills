@@ -1,8 +1,12 @@
 # Set up another Mac or VM
 
-The skill must work on any Mac with VMware Fusion. Keep machine-specific,
-non-secret values in a local JSON configuration file and passwords in macOS
-Keychain.
+Read this file for first-time setup, after moving to another Mac, or when SSH or
+VMware Guest Operations must be repaired.
+
+## Configure VMware control
+
+Install VMware Fusion and VMware Tools. Locate Fusion's `vmrun` executable and
+the intended VM's `.vmx` file.
 
 By default, `scripts/windows-vmrun` reads:
 
@@ -10,9 +14,7 @@ By default, `scripts/windows-vmrun` reads:
 ~/.config/windows-vm-control/config.json
 ```
 
-Override that path with `WINDOWS_VM_CONTROL_CONFIG`.
-
-Example:
+Override the path with `WINDOWS_VM_CONTROL_CONFIG`.
 
 ```json
 {
@@ -22,17 +24,19 @@ Example:
   "guest_keychain_account": "windows-user",
   "guest_keychain_service": "windows-vm-control:guest",
   "vm_keychain_account": "mac-user",
-  "vm_keychain_service": "windows-vm-control:vm-unlock",
-  "plasmite_pool": "codex-bridge",
-  "plasmite_mcp_url": "http://<host-vmnet-address>:9700/mcp",
-  "plasmite_token_file": "/Users/me/.config/plasmite/codex-bridge/token"
+  "vm_keychain_service": "windows-vm-control:vm-unlock"
 }
 ```
 
-`vm_keychain_account` and `vm_keychain_service` are optional when the VM is not
-encrypted. Guest credentials are required for VMware Guest Operations.
-`windows-vmrun doctor` checks the complete direct-control setup and therefore
-expects them.
+The VM unlock entries are optional when the VM is not encrypted. Store guest
+and VM passwords in macOS Keychain under the configured account and service
+names. Do not put them in JSON, shell history, prompts, or repositories.
+Set `guest_login` to the account used for the signed-in Windows console when
+interactive Guest Operations must create visible processes.
+
+The wrapper retrieves passwords from Keychain, but `vmrun` requires them in its
+process arguments. Other local processes may be able to observe those arguments
+while the command runs.
 
 Environment variables override JSON values:
 
@@ -44,54 +48,96 @@ Environment variables override JSON values:
 - `WINDOWS_VM_UNLOCK_KEYCHAIN_ACCOUNT`
 - `WINDOWS_VM_UNLOCK_KEYCHAIN_SERVICE`
 
-Use Keychain Access to create or update password items when the user can enter
-the password directly. Do not put a password in JSON, shell history, a command
-you type, a Codex prompt, or a Plasmite message. `vmrun` requires password
-arguments, so `windows-vmrun` reads them from Keychain and passes them directly.
-Never echo, log, or copy those values.
+Validate the setup:
 
-## Plasmite channel
+```bash
+scripts/windows-vmrun doctor
+scripts/windows-vmrun list
+scripts/windows-vmrun checkToolsState
+```
 
-Use one pool for the guide and VM agent. `codex-bridge` is the default pool
-name. Record the pool name, MCP URL, and token-file path in the local
-configuration.
+## Configure SSH
 
-On the host Mac:
+Use Windows OpenSSH Server as the normal command plane. Installing it and
+opening its firewall rule changes the guest and requires the user's authority.
 
-1. Install Plasmite.
-2. Create the pool.
-3. Run `plasmite serve` with launchd as a persistent user service on the VMware
-   host-only network address. Require a token file. The current proof-of-concept
-   uses port `9700`.
-4. Use TLS if the endpoint is reachable beyond the host-only VM network. Never
-   expose an unauthenticated writable endpoint.
+From an elevated PowerShell session in Windows:
 
-In Windows, configure the VM Codex MCP server to use
-`http://<host-vmnet-address>:9700/mcp`. Supply its bearer token from the guest
-environment or credential store, not from a prompt or repository.
+```powershell
+Get-WindowsCapability -Online |
+  Where-Object Name -Like 'OpenSSH.Server*'
+Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+Start-Service sshd
+Set-Service -Name sshd -StartupType Automatic
+if (!(Get-NetFirewallRule -Name OpenSSH-Server-In-TCP -ErrorAction SilentlyContinue)) {
+  New-NetFirewallRule -Name OpenSSH-Server-In-TCP `
+    -DisplayName 'OpenSSH Server (sshd)' -Enabled True `
+    -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22
+}
+```
 
-Confirm the channel with a short `hello` and `ack`. This proves that the VM
-agent can both read and write the pool.
+Prefer public-key authentication. A normal account uses
+`$HOME\.ssh\authorized_keys`. An administrator account instead uses
+`C:\ProgramData\ssh\administrators_authorized_keys`; grant access only to
+`SYSTEM` and the built-in Administrators group as required by Windows OpenSSH.
 
-## PowerShell and Codex
+Create a host alias in `~/.ssh/config`:
 
-Reuse the VM's existing Codex authentication and installation method. If the
-official PowerShell installer must update Codex, stop Codex and run the update
-from a separate PowerShell process. Do not use the in-session update prompt or
-add Winget only to perform the same update.
+```sshconfig
+Host windows-vm
+  HostName 192.168.0.10
+  User windows-user
+  IdentityFile ~/.ssh/windows-vm
+  IdentitiesOnly yes
+```
 
-For a new Mac:
+Use the guest's current address from:
 
-1. Install VMware Fusion and create or import the Windows VM.
-2. Install VMware Tools in the guest.
-3. Locate `vmrun` and the VM's `.vmx` file.
-4. Create the JSON configuration.
-5. Store the guest password and optional VM unlock password in Keychain under
-   the configured account and service names.
-6. Establish the Plasmite channel.
-7. Run `scripts/windows-vmrun doctor`.
-8. Continue with the fast path in `SKILL.md`.
+```bash
+scripts/windows-vmrun getGuestIPAddress -wait
+```
 
-Use `scripts/windows-vmrun list` to inspect running VMs before selecting one.
-When several stopped VMs exist, discover `.vmx` files locally and have the user
-choose; do not guess.
+Use a stable host-only address or a deliberate Fusion port forwarding rule when
+the VM address changes frequently. Do not expose SSH beyond the intended host
+network without an explicit security decision.
+
+Confirm noninteractive access:
+
+```bash
+ssh -o BatchMode=yes windows-vm \
+  'powershell.exe -NoProfile -NonInteractive -Command "$env:COMPUTERNAME; whoami"'
+```
+
+An SSH session is not the signed-in Windows desktop and cannot answer UAC.
+Launch visible processes through `runProgramInGuest -activeWindow -interactive`
+when the task requires the desktop session.
+
+## Optional guest agent
+
+Install Codex in Windows only when a task benefits from delegated reasoning.
+Reuse the guest's normal authentication and installation method.
+
+## Optional Plasmite channel
+
+Plasmite is optional and serves only as the message stream between the host and
+detached guest agent. Run the server on the Mac, bind it only to an appropriate
+interface, require a token, and configure the guest Codex MCP connection from a
+guest credential store. Keep the pool name intelligible; `codex-bridge` is the
+usual default.
+
+Do not install or operate Plasmite for direct SSH, attached `codex exec`, or
+ordinary `vmrun` control.
+
+## Move to another Mac
+
+1. Install VMware Fusion and import or create the VM.
+2. Install VMware Tools.
+3. Configure `windows-vmrun` and Keychain credentials.
+4. Configure the SSH alias and key.
+5. Run `scripts/windows-vmrun doctor`.
+6. Confirm noninteractive SSH.
+7. Add Codex only when a task requires delegation.
+8. Add Plasmite only when detached delegation requires a message channel.
+
+If several VMs exist, list or discover their `.vmx` files and have the user
+choose. Do not guess.
