@@ -24,9 +24,10 @@ useful skills and avoid maintaining copied versions of source-owned skills.
 Validate a skill with the personal wrapper:
 
 ```bash
-uv run ~/src/agent-skills/scripts/validate_skill.py <skill-directory>
+~/src/agent-skills/scripts/validate_skill.py <skill-directory>
 ```
 
 The wrapper supplies PyYAML to Codex's built-in skill validator from an isolated
-cached environment. Application repositories do not need a Python project or a
-global PyYAML installation for skill validation.
+cached `uv` environment. Application repositories do not need a Python project
+or a global PyYAML installation for skill validation. Invoke the wrapper
+directly. Do not run it with `python3`.
