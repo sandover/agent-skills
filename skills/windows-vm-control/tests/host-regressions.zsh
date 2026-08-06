@@ -23,8 +23,8 @@ run_capture() {
   command_status=$?
   set -e
   if [[ "$command_status" != "$expected" ]]; then
-    [[ ! -s "$temp_dir/out" ]] || { print -u2 'stdout:'; cat "$temp_dir/out" >&2; }
-    [[ ! -s "$temp_dir/err" ]] || { print -u2 'stderr:'; cat "$temp_dir/err" >&2; }
+    [[ ! -s "$temp_dir/out" ]] || { print -u2 'stdout:'; /bin/cat "$temp_dir/out" >&2; }
+    [[ ! -s "$temp_dir/err" ]] || { print -u2 'stderr:'; /bin/cat "$temp_dir/err" >&2; }
     fail "expected exit $expected, got $command_status: $*"
   fi
 }
@@ -37,8 +37,8 @@ run_capture_with_input() {
   command_status=$?
   set -e
   if [[ "$command_status" != "$expected" ]]; then
-    [[ ! -s "$temp_dir/out" ]] || { print -u2 'stdout:'; cat "$temp_dir/out" >&2; }
-    [[ ! -s "$temp_dir/err" ]] || { print -u2 'stderr:'; cat "$temp_dir/err" >&2; }
+    [[ ! -s "$temp_dir/out" ]] || { print -u2 'stdout:'; /bin/cat "$temp_dir/out" >&2; }
+    [[ ! -s "$temp_dir/err" ]] || { print -u2 'stderr:'; /bin/cat "$temp_dir/err" >&2; }
     fail "expected exit $expected, got $command_status: $*"
   fi
 }
@@ -142,6 +142,16 @@ chmod +x "$runner_dir/windows-vm-status" "$runner_dir/windows-vm-powershell" "$r
 
 : > "$temp_dir/cleanup.log"
 print -r -- 'preserve this prompt exactly' > "$temp_dir/prompt.txt"
+mkdir "$runner_dir/no-jq"
+ln -s /bin/cat "$runner_dir/no-jq/cat"
+set +e
+PATH="$runner_dir/no-jq" "$runner_dir/windows-codex-run" --cwd 'C:\repo' --timeout 2 \
+  < "$temp_dir/prompt.txt" > "$temp_dir/out" 2> "$temp_dir/err"
+command_status=$?
+set -e
+[[ "$command_status" == 69 ]] || fail "missing jq returned $command_status instead of 69"
+rg -q 'jq is required to classify Codex events' "$temp_dir/err" || fail 'missing jq was not reported'
+
 TEST_RUNNER_MODE=prompt TEST_PROMPT_LOG="$temp_dir/prompt.log" TEST_CLEANUP_LOG="$temp_dir/cleanup.log" PATH="$runner_dir/stub:$PATH" \
   run_capture_with_input 0 "$temp_dir/prompt.txt" "$runner_dir/windows-codex-run" --cwd 'C:\repo' --timeout 2
 [[ "$(<"$temp_dir/prompt.log")" == 'preserve this prompt exactly' ]] || fail 'runner did not preserve prompt stdin'
@@ -153,7 +163,7 @@ rg -q 'codex=turn-failed' "$temp_dir/err" || fail 'turn.failed event was not cla
 
 : > "$temp_dir/cleanup.log"
 TEST_RUNNER_MODE=approval TEST_CLEANUP_LOG="$temp_dir/cleanup.log" PATH="$runner_dir/stub:$PATH" \
-  run_capture_with_input 73 "$temp_dir/prompt.txt" "$runner_dir/windows-codex-run" --cwd 'C:\repo' --timeout 2
+  run_capture_with_input 77 "$temp_dir/prompt.txt" "$runner_dir/windows-codex-run" --cwd 'C:\repo' --timeout 2
 rg -q 'taskkill.exe /PID 4321 /T /F' "$temp_dir/cleanup.log" || fail 'approval did not target the guest process tree'
 rg -q 'guest_cleanup=ok root_pid=4321' "$temp_dir/err" || fail 'approval cleanup was not reported'
 

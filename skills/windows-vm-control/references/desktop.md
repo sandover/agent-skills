@@ -1,32 +1,31 @@
 # Visible desktop control
 
-Use the desktop path when the result depends on visible Windows state. Examples include a native app, focus, login, a dialog, clipboard behavior, a browser session, UAC, or a screenshot.
+Use desktop control only when the result depends on visible Windows state: an application, dialog, login, focus, clipboard, UAC prompt, or screenshot.
+
+## Protect the user's desktop
+
+Ask before bringing Fusion or another app to the Mac foreground, changing macOS focus, or moving or capturing the mouse. Approval covers only the bounded foreground interaction described to the user. Return control promptly.
+
+Background Fusion launch, `captureScreen`, SSH, Guest Operations, and guest-side UI Automation do not require foreground permission when they leave the user's Mac input and focus unchanged.
 
 ## Use a capture-action-capture loop
 
 1. Capture the VM display.
-2. Check the VM, Windows user, foreground app, and dialog.
-3. Perform one small input action.
-4. Capture the display again.
-5. Check the visible result.
+2. Identify the VM, Windows user, foreground app, and dialog.
+3. Perform one small action.
+4. Capture and check the result.
 
-Do not send a long blind input sequence. Window movement, scaling, focus, animation, and new dialogs can make old coordinates wrong.
+Do not send a long blind input sequence. Use an application interface or guest command when it proves the same result.
 
-## Choose the desktop only when needed
+## Reach the signed-in session
 
-Use an application interface or guest command when it can prove the same result. Use Fusion desktop control when the app exists only in the visible session. Use it also when appearance or focus is part of the result.
-
-Use VMware Tools for a guest process that does not need visible state.
-
-Resolve the signed-in Desktop instead of assuming a profile path:
+Resolve a redirected Windows Desktop rather than assuming a profile path:
 
 ```powershell
 [Environment]::GetFolderPath('Desktop')
 ```
 
-OneDrive or another policy can redirect the Desktop.
-
-Launch a process in the signed-in session with the Keychain-backed wrapper:
+Launch a process in the signed-in session:
 
 ```bash
 scripts/windows-vmrun runProgramInGuest \
@@ -35,49 +34,34 @@ scripts/windows-vmrun runProgramInGuest \
   -NoExit -NoProfile
 ```
 
-`-activeWindow -interactive` selects the signed-in session. It does not guarantee focus.
+`-activeWindow -interactive` selects the signed-in session but does not guarantee focus.
 
-Capture the display without bringing Fusion to the front:
+Capture without foregrounding Fusion:
 
 ```bash
 scripts/windows-vmrun captureScreen /tmp/windows-vm.png
 ```
 
-Send literal text only after a capture proves focus:
+Send literal guest text only after a capture proves the focused Windows target:
 
 ```bash
 scripts/windows-vmrun typeKeystrokesInGuest 'literal text'
 ```
 
-`vmrun` does not supply reliable portable mouse clicks or special-key notation. Use Windows UI Automation for repeated control. Use the Fusion window for occasional visual actions.
+`vmrun` has no reliable portable mouse-click or special-key notation. Use Windows UI Automation for repeated guest control. Use the Fusion window only after foreground permission.
 
-## Handle focus and display state
+## Handle prompts and uncertain display state
 
-- A black or stale capture can mean that Windows is locked, suspended, changing resolution, or not focused. It does not prove a Windows failure. Activate Fusion and click once inside the guest display when a fresh capture stays black.
-- Keystrokes go to the focused surface. Capture after a focus change.
-- Mac, Fusion, and Windows shortcuts can conflict. Send one action. Then check the result.
-- The clipboard crosses a trust boundary. Do not place secrets on it without explicit user approval.
+A black or stale capture can mean lock, suspend, resolution change, or missing focus. It does not prove a Windows failure. Ask before activating Fusion or clicking inside the guest.
 
-## Stop at identity boundaries
+Capture again after a focus change. Mac, Fusion, and Windows can intercept the same shortcut differently.
 
-UAC can ask for approval without asking for identity. The Mac agent may approve a known UAC prompt when the underlying action is authorized, the publisher and program are clear, and no credential is required.
+The clipboard crosses a trust boundary. Do not place secrets on it without explicit approval.
 
-Passwords, passkeys, MFA, and identity consent belong to the user.
+The Mac agent may approve a known UAC result of an authorized action when the publisher and program are clear and no credential is required. Stop for a password, passkey, multifactor authentication, identity consent, or an unclear prompt.
 
-Use this sequence when a prompt appears:
+## Prove the result
 
-1. Capture enough state to identify the prompt. Exclude secrets.
-2. Check whether the prompt asks for approval or for identity.
-3. Approve only a known result of an authorized action.
-4. Stop and ask the user when the prompt needs identity or has an unclear result.
-5. Capture the display again before work continues.
+Use a current screenshot for a visible-state claim. Add a command check when the action should also create stored state. `captureScreen` proves only the Fusion console, not an RDP or other Windows session.
 
-Do not send passwords, recovery codes, private keys, or tokens through remote automation.
-
-## Prove a visible result
-
-Use a current screenshot for a visible-state claim. Add a command check when the same action should also create stored system state.
-
-`captureScreen` captures the Fusion console. It does not prove the state of an RDP session or another Windows session.
-
-Only one operator controls the visible desktop at a time. Stop input when the user or another operator takes control. Capture fresh state before automation resumes.
+Only one operator controls the visible desktop. Stop input when the user or another operator takes control. Capture fresh state before resuming automation.

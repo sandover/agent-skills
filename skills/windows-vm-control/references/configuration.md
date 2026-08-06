@@ -1,16 +1,12 @@
 # Local configuration
 
-The `windows-vmrun` wrapper keeps VM details in one host-side file. It gets guest and VM passwords from macOS Keychain.
-
-The default file is:
+`windows-vmrun` reads the exact VM target and Keychain identifiers from:
 
 ```text
 ~/.config/windows-vm-control/config.json
 ```
 
-`WINDOWS_VM_CONTROL_CONFIG` selects another file.
-
-Use this shape:
+`WINDOWS_VM_CONTROL_CONFIG` selects another file. Use this shape:
 
 ```json
 {
@@ -25,24 +21,17 @@ Use this shape:
 }
 ```
 
-The `ssh_alias` field is optional. Its default is `windows-vm`. The VM unlock entries are optional for an unencrypted VM.
+`ssh_alias` defaults to `windows-vm`. VM unlock fields are optional for an unencrypted VM.
 
-Store passwords in Keychain under the configured service and account. Do not put a password in JSON, a prompt, shell history, or a repository.
+Environment overrides are grouped by purpose:
 
-The wrapper retrieves a password from Keychain. VMware `vmrun` then requires that password in a process argument. Another local process may see the argument while `vmrun` runs. Run these commands on the trusted Mac host.
+- Target: `WINDOWS_VMRUN_PATH`, `WINDOWS_VM_VMX_PATH`, `WINDOWS_VM_SSH_ALIAS`, `WINDOWS_VM_GUEST_LOGIN`.
+- Guest Operations credential: `WINDOWS_VM_GUEST_KEYCHAIN_ACCOUNT`, `WINDOWS_VM_GUEST_KEYCHAIN_SERVICE`.
+- VM unlock credential: `WINDOWS_VM_UNLOCK_KEYCHAIN_ACCOUNT`, `WINDOWS_VM_UNLOCK_KEYCHAIN_SERVICE`.
 
-Environment values can override the file:
+Store passwords in Keychain, not JSON, prompts, history, or repositories. The wrapper passes a retrieved password to `vmrun` as a process argument. Another trusted local process can observe that argument while it runs.
 
-- `WINDOWS_VMRUN_PATH`
-- `WINDOWS_VM_VMX_PATH`
-- `WINDOWS_VM_SSH_ALIAS`
-- `WINDOWS_VM_GUEST_LOGIN`
-- `WINDOWS_VM_GUEST_KEYCHAIN_ACCOUNT`
-- `WINDOWS_VM_GUEST_KEYCHAIN_SERVICE`
-- `WINDOWS_VM_UNLOCK_KEYCHAIN_ACCOUNT`
-- `WINDOWS_VM_UNLOCK_KEYCHAIN_SERVICE`
-
-Check only the setup needed for the current path:
+Check only the capability needed for the chosen path:
 
 ```bash
 scripts/windows-vmrun doctor
@@ -50,21 +39,28 @@ scripts/windows-vmrun doctor --require guest-ops
 scripts/windows-vmrun doctor --require vm-unlock
 scripts/windows-vm-status --require ssh
 scripts/windows-vm-status --require codex
-scripts/windows-vm-powershell /absolute/host/task.ps1
-scripts/windows-codex-run --cwd 'C:\src\project' < /absolute/host/handoff.txt
 ```
 
-The base `doctor` check validates local `vmrun`, configuration, and the VMX path. Add `--require guest-ops` only for VMware guest-process or file operations. Add `--require vm-unlock` only when an encrypted VM must be unlocked. A Keychain error can mean that the item is missing or that the current process cannot access it. Key-based SSH does not use the guest Keychain credential.
+The base doctor checks `vmrun`, configuration, and the `.vmx` path. Require `guest-ops` for VMware guest files, processes, screenshots, or keystrokes and `vm-unlock` only for an encrypted VM. Key-based SSH does not require the guest password. A Keychain error can mean either a missing item or blocked access from the current process.
 
-Start a stopped VM only when the task authorizes it:
+## Start the VM
+
+Run startup commands with host access. Launch Fusion without taking focus, then list running VMs:
 
 ```bash
-scripts/windows-vmrun start gui
-scripts/windows-vmrun start nogui
+open -g -a 'VMware Fusion'
+scripts/windows-vmrun list
 ```
 
-Use `gui` when visible desktop work will follow. Do not guess when several `.vmx` files are available.
+If the configured `.vmx` is absent, start it without opening or raising its window:
+
+```bash
+scripts/windows-vmrun start nogui
+scripts/windows-vm-status --require ssh --wait 90
+```
+
+The wait retries transient boot failures but stops immediately for a hard trust or policy failure. The wrapper supplies the configured `.vmx`; do not select another VM. Ask for foreground permission before opening its Fusion window.
 
 ## End a session
 
-Leave the VM running when later work needs the current processes. Use `suspend` when later work needs the current memory state. Use `stop soft` for a clean Windows shutdown. Do not use `stop hard`, revert a snapshot, or power off Fusion without explicit task authorization.
+Leave the VM running. Ask before `suspend` or `stop soft`. A hard stop, snapshot revert, or Fusion shutdown also needs explicit authorization.

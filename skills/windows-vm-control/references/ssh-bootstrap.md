@@ -2,6 +2,13 @@
 
 Use Windows OpenSSH Server as the normal command path. Installation, firewall changes, and authorized-key changes need task authorization.
 
+## Contents
+
+- [Resolve both addresses](#resolve-both-addresses)
+- [Create one key and alias](#create-one-key-and-alias)
+- [Configure Windows](#configure-windows)
+- [Verify stored state](#verify-stored-state)
+
 ## Resolve both addresses
 
 Get the live guest address:
