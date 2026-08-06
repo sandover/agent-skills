@@ -79,17 +79,7 @@ ssh-keyscan -t ed25519 <GUEST_IP> | ssh-keygen -lf -
 
 Ask before installing OpenSSH, changing the firewall, or changing `authorized_keys`.
 
-Run the [direct SSH probe](command-work.md#direct-ssh) first. If it succeeds, do not change the server, key, or firewall.
-
-Get the VM address and the Mac interface on its route:
-
-```bash
-scripts/windows-vmrun getGuestIPAddress -wait
-route -n get <GUEST_IP>
-ipconfig getifaddr <INTERFACE>
-```
-
-Create one dedicated key only when it is absent, then add a stable `windows-vm` SSH alias:
+Use the configured SSH alias and key. Create the dedicated key only when it is absent:
 
 ```bash
 install -d -m 700 ~/.ssh
@@ -104,87 +94,17 @@ Host windows-vm
   IdentitiesOnly yes
 ```
 
-Run the following as a Windows administrator after replacing the placeholders:
-
-```powershell
-$ErrorActionPreference = 'Stop'
-$userName = '<LOCAL_WINDOWS_USER>'
-$publicKey = '<PUBLIC_KEY>'
-$hostAddress = '<MAC_VMWARE_ADDRESS>'
-
-function Add-AuthorizedKey {
-  param([string]$KeyFile, [string]$KeyText)
-  $newFields = $KeyText.Trim() -split '\s+'
-  if ($newFields.Count -lt 2) { throw 'invalid SSH public key' }
-  $keyBody = $newFields[1]
-  $existing = if (Test-Path -LiteralPath $KeyFile -PathType Leaf) {
-    @(Get-Content -LiteralPath $KeyFile)
-  } else {
-    @()
-  }
-  $present = $existing | Where-Object {
-    $fields = $_.Trim() -split '\s+'
-    $fields -ccontains $keyBody
-  }
-  if (-not $present) {
-    Add-Content -LiteralPath $KeyFile -Value $KeyText -Encoding ascii
-  }
-}
-
-$capability = Get-WindowsCapability -Online |
-  Where-Object Name -Like 'OpenSSH.Server*' | Select-Object -First 1
-if ($capability.State -ne 'Installed') {
-  Add-WindowsCapability -Online -Name $capability.Name | Out-Null
-}
-Start-Service sshd
-Set-Service sshd -StartupType Automatic
-
-$user = Get-LocalUser -Name $userName
-$isAdmin = Get-LocalGroupMember -SID 'S-1-5-32-544' |
-  Where-Object SID -EQ $user.SID
-if ($isAdmin) {
-  $keys = 'C:\ProgramData\ssh\administrators_authorized_keys'
-  Add-AuthorizedKey -KeyFile $keys -KeyText $publicKey
-  & icacls.exe $keys /inheritance:r `
-    /grant '*S-1-5-18:F' /grant '*S-1-5-32-544:F' | Out-Null
-} else {
-  $directory = Join-Path (Join-Path 'C:\Users' $userName) '.ssh'
-  $keys = Join-Path $directory 'authorized_keys'
-  New-Item -ItemType Directory -Path $directory -Force | Out-Null
-  Add-AuthorizedKey -KeyFile $keys -KeyText $publicKey
-  & icacls.exe $directory /inheritance:r `
-    /grant "*$($user.SID):(OI)(CI)F" | Out-Null
-  & icacls.exe $keys /inheritance:r /grant "*$($user.SID):F" | Out-Null
-}
-
-$rule = Get-NetFirewallRule -Name OpenSSH-Server-In-TCP -ErrorAction SilentlyContinue
-if ($rule) {
-  Set-NetFirewallRule -Name OpenSSH-Server-In-TCP `
-    -Enabled True -Profile Any -RemoteAddress $hostAddress
-} else {
-  New-NetFirewallRule -Name OpenSSH-Server-In-TCP `
-    -DisplayName 'OpenSSH Server (sshd)' -Enabled True -Profile Any `
-    -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 `
-    -RemoteAddress $hostAddress | Out-Null
-}
-```
-
-`Add-AuthorizedKey` compares the key body, preserves every existing line, and appends the dedicated key only when absent.
-
-Use the local account name, not a Microsoft account display name or profile directory. The VMware adapter can use the Public profile, so the rule uses `Profile Any` and limits `RemoteAddress` to the Mac.
-
-Before storing the SSH host key, confirm the configured VM through Tools or the Fusion screen. Do not use `accept-new` before this check.
-
-After comparing the fingerprints, store the SSH host key and verify SSH:
+Restore the supported configuration through Guest Operations:
 
 ```bash
-ssh -o BatchMode=yes -o ConnectTimeout=10 \
-  -o StrictHostKeyChecking=accept-new windows-vm \
-  'powershell.exe -NoProfile -NonInteractive -Command "$env:COMPUTERNAME; whoami"'
-scripts/windows-vm-status --require ssh
+scripts/windows-vm-recover-ssh
 ```
 
-The Mac VMware address may change after sleep, restart, or a VMware network change. Compare it with the firewall rule before widening access.
+The command makes no change when SSH already works. Otherwise, it derives the local Windows user and public key from the SSH alias, confirms that the alias names the configured VM address, derives the Mac address on that route, and restores OpenSSH. It preserves unrelated authorized keys and limits the firewall rule to the Mac address.
+
+The command requires Guest Operations and an elevated Windows administrator token. Exit 77 means the configured Guest Operations account did not receive that token; stop for an administrator or UAC. Exit 76 means cleanup could not be confirmed. Exit 124 means the bounded recovery timed out.
+
+On success, the JSON result includes the host-key fingerprint and the command verifies SSH. If recovery succeeds before the host key is trusted, compare that fingerprint with `ssh-keyscan` before storing the key. Never suppress a host-key mismatch.
 
 ## Check why the VM is slow
 

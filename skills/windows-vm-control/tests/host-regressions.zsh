@@ -280,6 +280,162 @@ TEST_INTERACTIVE_MODE=cleanup-failure TEST_INTERACTIVE_LOG="$temp_dir/interactiv
   --result "$temp_dir/interactive-cleanup.json" "$payload_dir/small.ps1"
 rg -q 'cleanup=unverified' "$temp_dir/err" || fail 'interactive cleanup failure was not reported'
 
+recovery_dir="$temp_dir/recovery"
+mkdir -p "$recovery_dir/stub"
+cp "$skill_dir/scripts/windows-vm-recover-ssh" "$recovery_dir/"
+cp "$skill_dir/scripts/restore-openssh.ps1" "$recovery_dir/"
+cat > "$recovery_dir/windows-vm-status" <<'STUB'
+#!/bin/zsh
+if [[ "$TEST_RECOVERY_MODE" == not-needed || -e "$TEST_RECOVERY_LAUNCHED" ]]; then
+  print 'ssh=ok'
+  print 'computer=TEST-WIN'
+  print 'user=test-win\agent'
+  exit 0
+fi
+print 'ssh=refused'
+exit 1
+STUB
+cat > "$recovery_dir/windows-vmrun" <<'STUB'
+#!/bin/zsh
+print -r -- "$*" >> "$TEST_RECOVERY_LOG"
+command_name=${1:-}
+shift || true
+case "$command_name" in
+  doctor)
+    ;;
+  getGuestIPAddress)
+    print '192.0.2.10'
+    ;;
+  createTempFileInGuest)
+    print -r -- 'C:\Temp\vmware-recovery.tmp'
+    ;;
+  copyFileFromHostToGuest)
+    ;;
+  runProgramInGuest)
+    print launched > "$TEST_RECOVERY_LAUNCHED"
+    ;;
+  fileExistsInGuest)
+    guest_path=${1:-}
+    if [[ "$guest_path" == *.result.json ]]; then
+      [[ "$TEST_RECOVERY_MODE" != timeout ]]
+    elif [[ "$guest_path" == *.started.json ]]; then
+      return 0
+    else
+      return 0
+    fi
+    ;;
+  copyFileFromGuestToHost)
+    guest_path=${1:-}
+    host_path=${2:-}
+    if [[ "$guest_path" == *.started.json ]]; then
+      print '{"pid":333}' > "$host_path"
+    elif [[ "$TEST_RECOVERY_MODE" == administrator-required ]]; then
+      print '{"status":"error","code":"administrator_required","message":"administrator required"}' > "$host_path"
+    else
+      print '{"status":"ok","user":"agent","host_key_fingerprint":"256 SHA256:test TEST-WIN (ED25519)"}' > "$host_path"
+    fi
+    ;;
+  listProcessesInGuest|killProcessInGuest)
+    ;;
+  deleteFileInGuest)
+    [[ "$TEST_RECOVERY_MODE" != cleanup-failure ]]
+    ;;
+  *)
+    print -u2 -r -- "unexpected vmrun command: $command_name"
+    exit 99
+    ;;
+esac
+STUB
+cat > "$recovery_dir/stub/ssh" <<'STUB'
+#!/bin/zsh
+if [[ "${1:-}" == -G ]]; then
+  print -r -- "hostname ${TEST_RECOVERY_SSH_ROUTE:-192.0.2.10}"
+  print 'user agent'
+  print -r -- "identityfile $TEST_RECOVERY_IDENTITY"
+  exit 0
+fi
+exit 99
+STUB
+cat > "$recovery_dir/stub/route" <<'STUB'
+#!/bin/zsh
+print 'interface: vmnet8'
+STUB
+cat > "$recovery_dir/stub/ipconfig" <<'STUB'
+#!/bin/zsh
+print '192.0.2.1'
+STUB
+chmod +x "$recovery_dir/windows-vm-status" "$recovery_dir/windows-vmrun" \
+  "$recovery_dir/windows-vm-recover-ssh" "$recovery_dir/stub/ssh" \
+  "$recovery_dir/stub/route" "$recovery_dir/stub/ipconfig"
+print 'ssh-ed25519 AAAATEST windows-vm' > "$recovery_dir/windows-vm.pub"
+
+: > "$temp_dir/recovery.log"
+rm -f "$temp_dir/recovery-launched"
+TEST_RECOVERY_MODE=not-needed TEST_RECOVERY_LOG="$temp_dir/recovery.log" \
+  TEST_RECOVERY_LAUNCHED="$temp_dir/recovery-launched" \
+  WINDOWS_VM_SSH_ALIAS=windows-vm \
+  PATH="$recovery_dir/stub:$PATH" \
+  run_capture 0 "$recovery_dir/windows-vm-recover-ssh"
+rg -q '^recovery=not_needed$' "$temp_dir/out" || fail 'working SSH did not skip recovery'
+[[ ! -s "$temp_dir/recovery.log" ]] || fail 'working SSH still invoked Guest Operations'
+
+: > "$temp_dir/recovery.log"
+rm -f "$temp_dir/recovery-launched"
+TEST_RECOVERY_MODE=success TEST_RECOVERY_LOG="$temp_dir/recovery.log" \
+  TEST_RECOVERY_LAUNCHED="$temp_dir/recovery-launched" \
+  TEST_RECOVERY_IDENTITY="$recovery_dir/windows-vm" \
+  WINDOWS_VM_SSH_ALIAS=windows-vm \
+  PATH="$recovery_dir/stub:$PATH" \
+  run_capture 0 "$recovery_dir/windows-vm-recover-ssh" --timeout 2
+rg -q 'host_key_fingerprint' "$temp_dir/out" || fail 'recovery result omitted the host-key fingerprint'
+rg -q 'runProgramInGuest' "$temp_dir/recovery.log" || fail 'recovery did not launch through Guest Operations'
+rg -Fq 'windows-vm.pub C:\Temp\vmware-recovery.tmp.public-key.pub' "$temp_dir/recovery.log" || fail 'recovery did not resolve and transfer the SSH public key'
+rg -Fq -- '-UserName agent' "$temp_dir/recovery.log" || fail 'recovery did not resolve the Windows user'
+rg -Fq -- '-PublicKeyPath C:\Temp\vmware-recovery.tmp.public-key.pub' "$temp_dir/recovery.log" || fail 'recovery did not use its transferred public key'
+rg -Fq -- '-HostAddress 192.0.2.1' "$temp_dir/recovery.log" || fail 'recovery did not pass the Mac route address'
+rg -Fq 'deleteFileInGuest C:\Temp\vmware-recovery.tmp.restore-openssh.ps1' "$temp_dir/recovery.log" || fail 'recovery script was not cleaned up'
+
+: > "$temp_dir/recovery.log"
+rm -f "$temp_dir/recovery-launched"
+TEST_RECOVERY_MODE=success TEST_RECOVERY_LOG="$temp_dir/recovery.log" \
+  TEST_RECOVERY_LAUNCHED="$temp_dir/recovery-launched" \
+  TEST_RECOVERY_IDENTITY="$recovery_dir/windows-vm" TEST_RECOVERY_SSH_ROUTE=192.0.2.99 \
+  WINDOWS_VM_SSH_ALIAS=windows-vm \
+  PATH="$recovery_dir/stub:$PATH" \
+  run_capture 75 "$recovery_dir/windows-vm-recover-ssh" --timeout 2
+rg -q 'route_match=no' "$temp_dir/err" || fail 'route mismatch was not reported'
+rg -q 'runProgramInGuest' "$temp_dir/recovery.log" && fail 'route mismatch still launched recovery'
+
+: > "$temp_dir/recovery.log"
+rm -f "$temp_dir/recovery-launched"
+TEST_RECOVERY_MODE=administrator-required TEST_RECOVERY_LOG="$temp_dir/recovery.log" \
+  TEST_RECOVERY_LAUNCHED="$temp_dir/recovery-launched" \
+  TEST_RECOVERY_IDENTITY="$recovery_dir/windows-vm" \
+  WINDOWS_VM_SSH_ALIAS=windows-vm \
+  PATH="$recovery_dir/stub:$PATH" \
+  run_capture 77 "$recovery_dir/windows-vm-recover-ssh" --timeout 2
+rg -q 'administrator_required' "$temp_dir/out" || fail 'administrator requirement was not preserved'
+
+: > "$temp_dir/recovery.log"
+rm -f "$temp_dir/recovery-launched"
+TEST_RECOVERY_MODE=timeout TEST_RECOVERY_LOG="$temp_dir/recovery.log" \
+  TEST_RECOVERY_LAUNCHED="$temp_dir/recovery-launched" \
+  TEST_RECOVERY_IDENTITY="$recovery_dir/windows-vm" \
+  WINDOWS_VM_SSH_ALIAS=windows-vm \
+  PATH="$recovery_dir/stub:$PATH" \
+  run_capture 124 "$recovery_dir/windows-vm-recover-ssh" --timeout 1
+rg -q 'killProcessInGuest 333' "$temp_dir/recovery.log" || fail 'recovery timeout did not stop its guest process'
+
+: > "$temp_dir/recovery.log"
+rm -f "$temp_dir/recovery-launched"
+TEST_RECOVERY_MODE=cleanup-failure TEST_RECOVERY_LOG="$temp_dir/recovery.log" \
+  TEST_RECOVERY_LAUNCHED="$temp_dir/recovery-launched" \
+  TEST_RECOVERY_IDENTITY="$recovery_dir/windows-vm" \
+  WINDOWS_VM_SSH_ALIAS=windows-vm \
+  PATH="$recovery_dir/stub:$PATH" \
+  run_capture 76 "$recovery_dir/windows-vm-recover-ssh" --timeout 2
+rg -q 'cleanup=unverified' "$temp_dir/err" || fail 'recovery cleanup failure was not reported'
+
 runner_dir="$temp_dir/runner"
 mkdir -p "$runner_dir/stub"
 cp "$skill_dir/scripts/windows-codex-run" "$runner_dir/"
