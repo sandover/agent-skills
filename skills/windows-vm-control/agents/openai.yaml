@@ -1,4 +1,4 @@
 interface:
   display_name: "Windows VM Control"
   short_description: "Control Windows from the Mac host"
-  default_prompt: "Use $windows-vm-control to inspect the live VM state, choose the correct access path, complete this Windows task, and verify the result."
+  default_prompt: "Use $windows-vm-control to choose how to work with Windows, follow the matching recipe, and confirm that the requested work is complete."

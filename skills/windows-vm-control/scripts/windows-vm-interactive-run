@@ -1,0 +1,232 @@
+#!/bin/zsh
+# Run one task-owned PowerShell script in the signed-in Windows desktop.
+# Use VMware Guest Operations for unique paths, interactive launch, polling, and transfer.
+# Distinguish missing desktop, Guest Operations failure, task failure, and timeout.
+# Track runner and child PIDs through a start record before stopping timed-out work.
+# Retrieve one terminal JSON result and remove only files derived from the unique task path.
+# Never foreground Fusion or manipulate the Mac pointer.
+
+set -u
+
+usage() {
+  print -u2 'usage: windows-vm-interactive-run --timeout SECONDS --result /absolute/host/result.json /absolute/host/task.ps1'
+}
+
+script_dir=${0:A:h}
+vmrun="$script_dir/windows-vmrun"
+runner_script="$script_dir/interactive-runner.ps1"
+timeout_seconds=''
+result_path=''
+task_path=''
+
+while (( $# > 0 )); do
+  case "$1" in
+    --timeout)
+      (( $# >= 2 )) || { usage; exit 64; }
+      [[ "$2" == <-> && "$2" != 0 ]] || { print -u2 'timeout must be a positive integer'; exit 64; }
+      timeout_seconds=$2
+      shift 2
+      ;;
+    --result)
+      (( $# >= 2 )) || { usage; exit 64; }
+      result_path=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      (( $# == 1 )) || { usage; exit 64; }
+      task_path=$1
+      shift
+      ;;
+    -*)
+      print -u2 -r -- "unknown argument: $1"
+      usage
+      exit 64
+      ;;
+    *)
+      [[ -z "$task_path" ]] || { print -u2 'only one PowerShell task script is allowed'; exit 64; }
+      task_path=$1
+      shift
+      ;;
+  esac
+done
+
+[[ -n "$timeout_seconds" ]] || { print -u2 '--timeout is required'; usage; exit 64; }
+[[ -n "$result_path" ]] || { print -u2 '--result is required'; usage; exit 64; }
+[[ -n "$task_path" ]] || { usage; exit 64; }
+[[ "$task_path" == /* && "${task_path:l}" == *.ps1 && -f "$task_path" && -r "$task_path" ]] || {
+  print -u2 'task must be one readable absolute .ps1 file'
+  exit 66
+}
+[[ "$result_path" == /* ]] || { print -u2 'result path must be absolute'; exit 64; }
+[[ "$result_path" != "$task_path" ]] || { print -u2 'result path must differ from the task script'; exit 64; }
+result_parent=${result_path:h}
+[[ -d "$result_parent" && -w "$result_parent" ]] || { print -u2 'result directory is missing or not writable'; exit 73; }
+[[ -x "$vmrun" ]] || { print -u2 -r -- "VMware helper is not executable: $vmrun"; exit 69; }
+[[ -f "$runner_script" && -r "$runner_script" ]] || { print -u2 -r -- "interactive runner is not readable: $runner_script"; exit 69; }
+
+host_temp=$(mktemp -d -t windows-vm-interactive-run.XXXXXX) || { print -u2 'could not create host temporary directory'; exit 73; }
+trap 'rm -rf -- "$host_temp"' EXIT
+
+guest_seed=''
+guest_task=''
+guest_runner=''
+guest_started=''
+guest_result=''
+guest_stdout=''
+guest_stderr=''
+
+guest_files() {
+  reply=("$guest_seed" "$guest_task" "$guest_runner" "$guest_started" "$guest_result" "$guest_stdout" "$guest_stderr")
+}
+
+cleanup_guest_files() {
+  local guest_file
+  integer failed=0
+  "$vmrun" listProcessesInGuest >/dev/null 2>&1 || return 1
+  guest_files
+  for guest_file in "${reply[@]}"; do
+    [[ -n "$guest_file" ]] || continue
+    if "$vmrun" fileExistsInGuest "$guest_file" >/dev/null 2>&1; then
+      "$vmrun" deleteFileInGuest "$guest_file" >/dev/null 2>&1 || failed=1
+    fi
+  done
+  return "$failed"
+}
+
+read_started_pids() {
+  runner_pid=''
+  child_pid=''
+  "$vmrun" fileExistsInGuest "$guest_started" >/dev/null 2>&1 || return 1
+  "$vmrun" copyFileFromGuestToHost "$guest_started" "$host_temp/started.json" >/dev/null 2>&1 || return 1
+  runner_pid=$(/usr/bin/plutil -extract runner_pid raw -o - "$host_temp/started.json" 2>/dev/null) || runner_pid=''
+  child_pid=$(/usr/bin/plutil -extract child_pid raw -o - "$host_temp/started.json" 2>/dev/null) || child_pid=''
+  return 0
+}
+
+stop_task_processes() {
+  read_started_pids || return 0
+  [[ "$child_pid" == <-> ]] && "$vmrun" killProcessInGuest "$child_pid" >/dev/null 2>&1 || true
+  [[ "$runner_pid" == <-> ]] && "$vmrun" killProcessInGuest "$runner_pid" >/dev/null 2>&1 || true
+}
+
+finish_with_cleanup() {
+  local requested_exit=$1
+  if ! cleanup_guest_files; then
+    print -u2 -r -- "cleanup=unverified guest_task=${guest_task:-unknown}"
+    exit 76
+  fi
+  exit "$requested_exit"
+}
+
+on_signal() {
+  local signal_exit=$1
+  stop_task_processes
+  if ! cleanup_guest_files; then
+    print -u2 -r -- "cleanup=unverified guest_task=${guest_task:-unknown}"
+  fi
+  exit "$signal_exit"
+}
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+trap 'on_signal 129' HUP
+
+if ! "$vmrun" doctor --require guest-ops; then
+  print -u2 'guest_operations=unavailable'
+  exit 71
+fi
+
+process_list=$("$vmrun" listProcessesInGuest 2>"$host_temp/guest-ops.err")
+if (( $? != 0 )); then
+  /bin/cat "$host_temp/guest-ops.err" >&2
+  print -u2 'guest_operations=list-processes-failed'
+  exit 71
+fi
+if [[ "${process_list:l}" != *explorer.exe* ]]; then
+  print -u2 'interactive_desktop=missing'
+  exit 72
+fi
+
+guest_seed=$("$vmrun" createTempFileInGuest 2>"$host_temp/guest-ops.err")
+if (( $? != 0 )); then
+  /bin/cat "$host_temp/guest-ops.err" >&2
+  print -u2 'guest_operations=create-temp-failed'
+  exit 71
+fi
+guest_seed=${guest_seed//$'\r'/}
+[[ -n "$guest_seed" && "$guest_seed" != *$'\n'* ]] || {
+  print -u2 'guest_operations=invalid-temp-path'
+  exit 71
+}
+guest_task="${guest_seed}.task.ps1"
+guest_runner="${guest_seed}.runner.ps1"
+guest_started="${guest_seed}.started.json"
+guest_result="${guest_seed}.result.json"
+guest_stdout="${guest_seed}.stdout.txt"
+guest_stderr="${guest_seed}.stderr.txt"
+
+if ! "$vmrun" copyFileFromHostToGuest "$task_path" "$guest_task"; then
+  print -u2 'guest_operations=copy-task-failed'
+  finish_with_cleanup 71
+fi
+if ! "$vmrun" copyFileFromHostToGuest "$runner_script" "$guest_runner"; then
+  print -u2 'guest_operations=copy-runner-failed'
+  finish_with_cleanup 71
+fi
+
+if ! "$vmrun" runProgramInGuest \
+  -noWait -activeWindow -interactive \
+  'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' \
+  -NoLogo -NoProfile -ExecutionPolicy Bypass \
+  -File "$guest_runner" \
+  -TaskPath "$guest_task" \
+  -StartedPath "$guest_started" \
+  -ResultPath "$guest_result" \
+  -StdoutPath "$guest_stdout" \
+  -StderrPath "$guest_stderr"; then
+  print -u2 'interactive_launch=failed'
+  finish_with_cleanup 75
+fi
+
+integer deadline=$(( SECONDS + timeout_seconds ))
+result_ready=0
+while (( SECONDS < deadline )); do
+  if "$vmrun" fileExistsInGuest "$guest_result" >/dev/null 2>&1; then
+    result_ready=1
+    break
+  fi
+  sleep 1
+done
+
+if (( ! result_ready )); then
+  if ! "$vmrun" listProcessesInGuest >/dev/null 2>&1; then
+    print -u2 'guest_operations=lost-during-wait'
+    stop_task_processes
+    finish_with_cleanup 71
+  fi
+  print -u2 -r -- "interactive_timeout=${timeout_seconds}s"
+  stop_task_processes
+  finish_with_cleanup 124
+fi
+
+if ! "$vmrun" copyFileFromGuestToHost "$guest_result" "$result_path"; then
+  print -u2 'guest_operations=copy-result-failed'
+  stop_task_processes
+  finish_with_cleanup 71
+fi
+
+result_status=$(/usr/bin/plutil -extract status raw -o - "$result_path" 2>/dev/null) || result_status=''
+/bin/cat "$result_path"
+print
+case "$result_status" in
+  ok) finish_with_cleanup 0 ;;
+  error) finish_with_cleanup 75 ;;
+  *)
+    print -u2 'interactive_result=invalid'
+    finish_with_cleanup 75
+    ;;
+esac

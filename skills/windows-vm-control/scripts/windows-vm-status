@@ -259,6 +259,7 @@ probe_once() {
         fi
       else
         ssh_state=probe_failed
+        (( need_ssh )) && hard_failure=1
       fi
     else
       ssh_error=$(<"$error_file")

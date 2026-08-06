@@ -1,9 +1,9 @@
 #!/bin/zsh
-# Run one exact host PowerShell script through one bounded SSH connection.
-# Encode for Windows PowerShell so nested shell quoting is not part of the API.
-# Preserve caller stdin plus remote stdout, stderr, and exit status.
-# Reject unsafe command-line payload sizes before any network connection.
-# Create no guest file and never print the script or its encoded contents.
+# Run one exact host PowerShell script through bounded SSH operations.
+# Use EncodedCommand for small scripts and a unique Windows temp file for large ones.
+# Preserve caller stdin plus remote stdout, stderr, and the script exit status.
+# Remove a transferred script after execution and report unverified cleanup distinctly.
+# Never print the script, its encoded contents, or secrets from its temporary file.
 
 set -u
 
@@ -77,26 +77,105 @@ encoded_command=$(
 ) || { print -u2 'failed to encode PowerShell script as UTF-16LE'; exit 65; }
 
 encoded_chars=${#encoded_command}
-if (( encoded_chars > max_encoded_chars )); then
-  print -u2 -r -- "PowerShell script is too large for safe EncodedCommand transport (${encoded_chars} encoded characters; limit ${max_encoded_chars})"
-  print -u2 'Use the explicit copy-and-run recipe for a large exact script, or bounded Codex for adaptive work.'
-  exit 65
+ssh_options=(
+  -o BatchMode=yes
+  -o ConnectTimeout=5
+  -o ConnectionAttempts=1
+  -o ServerAliveInterval=5
+)
+
+run_with_timeout() {
+  local seconds=$1
+  shift
+  /usr/bin/perl -e 'alarm shift; exec @ARGV' "$seconds" "$@"
+}
+
+if (( encoded_chars <= max_encoded_chars )); then
+  remote_command="C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded_command"
+  run_with_timeout "$timeout_seconds" ssh "${ssh_options[@]}" "$ssh_host" "$remote_command"
+  result=$?
+  if (( result == 142 )); then
+    print -u2 -r -- "PowerShell command timed out after ${timeout_seconds}s"
+    exit 124
+  fi
+  exit "$result"
 fi
 
-remote_command="C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded_command"
+command -v scp >/dev/null 2>&1 || { print -u2 'scp is required for a large PowerShell script'; exit 69; }
 
-/usr/bin/perl -e 'alarm shift; exec @ARGV' "$timeout_seconds" \
-  ssh \
-  -o BatchMode=yes \
-  -o ConnectTimeout=5 \
-  -o ConnectionAttempts=1 \
-  -o ServerAliveInterval=5 \
-  "$ssh_host" \
-  "$remote_command"
+temp_query='C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoLogo -NoProfile -NonInteractive -Command "[Console]::Out.Write($env:TEMP)"'
+guest_temp_dir=$(run_with_timeout 10 ssh -n "${ssh_options[@]}" "$ssh_host" "$temp_query")
 result=$?
+if (( result != 0 )); then
+  if (( result == 142 )); then
+    print -u2 'timed out while reading the Windows temporary directory'
+    exit 124
+  fi
+  exit "$result"
+fi
+guest_temp_dir=${guest_temp_dir//$'\r'/}
+[[ -n "$guest_temp_dir" && "$guest_temp_dir" != *$'\n'* ]] || {
+  print -u2 'Windows returned an invalid temporary directory'
+  exit 75
+}
 
-if (( result == 142 )); then
-  print -u2 -r -- "PowerShell command timed out after ${timeout_seconds}s"
-  exit 124
+task_id="${EPOCHSECONDS:-0}-$$-$RANDOM"
+guest_script="${guest_temp_dir}\\windows-vm-control-${task_id}.ps1"
+scp_guest_script=${guest_script//\\//}
+
+cleanup_guest_script() {
+  local escaped_path cleanup_source cleanup_encoded cleanup_command
+  escaped_path=${guest_script//\'/\'\'}
+  cleanup_source="Remove-Item -LiteralPath '$escaped_path' -Force -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath '$escaped_path') { exit 76 }"
+  cleanup_encoded=$(print -rn -- "$cleanup_source" | /usr/bin/iconv -f UTF-8 -t UTF-16LE | /usr/bin/base64 | /usr/bin/tr -d '\n') || return 1
+  cleanup_command="C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand $cleanup_encoded"
+  run_with_timeout 10 ssh -n "${ssh_options[@]}" "$ssh_host" "$cleanup_command" >/dev/null 2>&1
+}
+
+on_signal() {
+  local signal_exit=$1
+  if ! cleanup_guest_script; then
+    print -u2 -r -- "cleanup=unverified guest_script=$guest_script"
+  fi
+  exit "$signal_exit"
+}
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
+trap 'on_signal 129' HUP
+
+run_with_timeout 15 scp "${ssh_options[@]}" -- "$script_path" "${ssh_host}:${scp_guest_script}"
+result=$?
+if (( result != 0 )); then
+  if ! cleanup_guest_script; then
+    print -u2 -r -- "cleanup=unverified guest_script=$guest_script"
+    exit 76
+  fi
+  if (( result == 142 )); then
+    print -u2 'PowerShell script transfer timed out'
+    exit 124
+  fi
+  exit "$result"
+fi
+
+escaped_path=${guest_script//\'/\'\'}
+wrapper_source="\$script = '$escaped_path'; \$powershell = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'; \$guestExit = 1; try { & \$powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \$script; \$guestExit = \$LASTEXITCODE } finally { Remove-Item -LiteralPath \$script -Force -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath \$script) { [Console]::Error.WriteLine(\"cleanup=failed guest_exit=\$guestExit path=\$script\"); exit 76 } }; exit \$guestExit"
+wrapper_encoded=$(print -rn -- "$wrapper_source" | /usr/bin/iconv -f UTF-8 -t UTF-16LE | /usr/bin/base64 | /usr/bin/tr -d '\n') || {
+  cleanup_guest_script || print -u2 -r -- "cleanup=unverified guest_script=$guest_script"
+  exit 65
+}
+remote_command="C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand $wrapper_encoded"
+
+run_with_timeout "$timeout_seconds" ssh "${ssh_options[@]}" "$ssh_host" "$remote_command"
+result=$?
+trap - INT TERM HUP
+if (( result != 0 )); then
+  if ! cleanup_guest_script; then
+    print -u2 -r -- "cleanup=unverified guest_script=$guest_script"
+    exit 76
+  fi
+  if (( result == 142 )); then
+    print -u2 -r -- "PowerShell command timed out after ${timeout_seconds}s"
+    exit 124
+  fi
 fi
 exit "$result"
