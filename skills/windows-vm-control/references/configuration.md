@@ -1,26 +1,22 @@
-# Configure VMware control
+# Local configuration
 
-Read this file for first-time VMware Fusion setup, VM discovery, VMware Tools
-repair, or migration to another Mac. Read [ssh.md](ssh.md) for SSH setup and
-repair.
+The `windows-vmrun` wrapper keeps VM details in one host-side file. It gets guest and VM passwords from macOS Keychain.
 
-## Configure the wrapper
-
-Install VMware Fusion and VMware Tools. Locate Fusion's `vmrun` executable and
-the intended VM's `.vmx` file.
-
-By default, `scripts/windows-vmrun` reads:
+The default file is:
 
 ```text
 ~/.config/windows-vm-control/config.json
 ```
 
-Override the path with `WINDOWS_VM_CONTROL_CONFIG`.
+`WINDOWS_VM_CONTROL_CONFIG` selects another file.
+
+Use this shape:
 
 ```json
 {
   "vmrun_path": "/Applications/VMware Fusion.app/Contents/Library/vmrun",
   "vmx_path": "/Users/me/Virtual Machines/Windows.vmwarevm/Windows.vmx",
+  "ssh_alias": "windows-vm",
   "guest_login": "windows-user",
   "guest_keychain_account": "windows-user",
   "guest_keychain_service": "windows-vm-control:guest",
@@ -29,50 +25,46 @@ Override the path with `WINDOWS_VM_CONTROL_CONFIG`.
 }
 ```
 
-The VM unlock entries are optional for an unencrypted VM. Store guest and VM
-passwords in macOS Keychain under the configured account and service names. Do
-not put them in JSON, shell history, prompts, or repositories. Set
-`guest_login` to the account used by the signed-in Windows console.
+The `ssh_alias` field is optional. Its default is `windows-vm`. The VM unlock entries are optional for an unencrypted VM.
 
-The wrapper retrieves passwords from Keychain, but `vmrun` requires them in its
-process arguments. Other local processes may be able to observe those arguments
-while the command runs.
+Store passwords in Keychain under the configured service and account. Do not put a password in JSON, a prompt, shell history, or a repository.
 
-Environment variables override JSON values:
+The wrapper retrieves a password from Keychain. VMware `vmrun` then requires that password in a process argument. Another local process may see the argument while `vmrun` runs. Run these commands on the trusted Mac host.
+
+Environment values can override the file:
 
 - `WINDOWS_VMRUN_PATH`
 - `WINDOWS_VM_VMX_PATH`
+- `WINDOWS_VM_SSH_ALIAS`
 - `WINDOWS_VM_GUEST_LOGIN`
 - `WINDOWS_VM_GUEST_KEYCHAIN_ACCOUNT`
 - `WINDOWS_VM_GUEST_KEYCHAIN_SERVICE`
 - `WINDOWS_VM_UNLOCK_KEYCHAIN_ACCOUNT`
 - `WINDOWS_VM_UNLOCK_KEYCHAIN_SERVICE`
 
-Run Keychain-backed wrapper commands on the host, not in the sandbox.
-
-## Validate or repair VMware access
+Check only the setup needed for the current path:
 
 ```bash
 scripts/windows-vmrun doctor
-scripts/windows-vmrun list
-scripts/windows-vmrun checkToolsState
+scripts/windows-vmrun doctor --require guest-ops
+scripts/windows-vmrun doctor --require vm-unlock
+scripts/windows-vm-status --require ssh
+scripts/windows-vm-status --require codex
+scripts/windows-vm-powershell /absolute/host/task.ps1
+scripts/windows-codex-run --cwd 'C:\src\project' < /absolute/host/handoff.txt
 ```
 
-If the VM is stopped, start it in the mode required by the task:
+The base `doctor` check validates local `vmrun`, configuration, and the VMX path. Add `--require guest-ops` only for VMware guest-process or file operations. Add `--require vm-unlock` only when an encrypted VM must be unlocked. A Keychain error can mean that the item is missing or that the current process cannot access it. Key-based SSH does not use the guest Keychain credential.
+
+Start a stopped VM only when the task authorizes it:
 
 ```bash
 scripts/windows-vmrun start gui
 scripts/windows-vmrun start nogui
 ```
 
-Use `gui` when desktop work is expected. If several VMs exist, list or discover
-their `.vmx` files and have the user choose. Do not guess.
+Use `gui` when visible desktop work will follow. Do not guess when several `.vmx` files are available.
 
-## Move to another Mac
+## End a session
 
-1. Install VMware Fusion and import or create the VM.
-2. Install VMware Tools.
-3. Configure `windows-vmrun` and Keychain credentials.
-4. Validate VMware access.
-5. Bootstrap SSH with [ssh.md](ssh.md).
-6. Install Codex in Windows only when delegation requires it.
+Leave the VM running when later work needs the current processes. Use `suspend` when later work needs the current memory state. Use `stop soft` for a clean Windows shutdown. Do not use `stop hard`, revert a snapshot, or power off Fusion without explicit task authorization.

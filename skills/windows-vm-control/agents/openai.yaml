@@ -1,4 +1,4 @@
 interface:
   display_name: "Windows VM Control"
-  short_description: "Control Windows from a host Mac agent"
-  default_prompt: "Use $windows-vm-control to run this Windows task through direct SSH by default, delegate to Windows Codex when useful, and use desktop control only when needed."
+  short_description: "Control Windows from the Mac host"
+  default_prompt: "Use $windows-vm-control to inspect the live VM state, choose the correct access path, complete this Windows task, and verify the result."

@@ -1,0 +1,334 @@
+#!/bin/zsh
+# Report independent VMware, Tools, SSH, and guest Codex readiness.
+# Gate success on an explicit capability list or the compatible default set.
+# Retry only transient live-state failures within a bounded wait period.
+# Validate local configuration before probing and fail hard trust errors fast.
+# Keep the command read-only and emit stable key=value evidence.
+
+set -u
+
+usage() {
+  print -u2 'usage: windows-vm-status [--vmx PATH] [--ssh HOST] [--vmrun PATH] [--no-ssh] [--wait SECONDS] [--require vm,tools,ssh,codex]'
+}
+
+script_dir=${0:A:h}
+wrapper="$script_dir/windows-vmrun"
+config_root="${XDG_CONFIG_HOME:-${HOME}/.config}"
+config_path="${WINDOWS_VM_CONTROL_CONFIG:-${config_root}/windows-vm-control/config.json}"
+
+read_config() {
+  local key=$1
+  if [[ -f "$config_path" ]]; then
+    /usr/bin/plutil -extract "$key" raw -o - "$config_path" 2>/dev/null || true
+  fi
+}
+
+vmrun="${WINDOWS_VMRUN_PATH:-$(read_config vmrun_path)}"
+vmrun="${vmrun:-/Applications/VMware Fusion.app/Contents/Library/vmrun}"
+vmx="${WINDOWS_VM_VMX_PATH:-$(read_config vmx_path)}"
+ssh_host="${WINDOWS_VM_SSH_ALIAS:-$(read_config ssh_alias)}"
+ssh_host="${ssh_host:-windows-vm}"
+check_ssh=1
+wait_seconds=0
+required=(vm tools ssh)
+require_explicit=0
+need_vm=1
+need_ssh=1
+need_codex=0
+
+parse_required() {
+  local raw=$1 capability
+  local -a parsed
+  parsed=("${(@s:,:)raw}")
+  (( ${#parsed} > 0 )) || return 1
+  for capability in "${parsed[@]}"; do
+    case "$capability" in
+      vm|tools|ssh|codex) ;;
+      *) return 1 ;;
+    esac
+  done
+  required=("${parsed[@]}")
+}
+
+while (( $# > 0 )); do
+  case "$1" in
+    --vmx)
+      (( $# >= 2 )) || { usage; exit 64; }
+      vmx=$2
+      shift 2
+      ;;
+    --ssh)
+      (( $# >= 2 )) || { usage; exit 64; }
+      ssh_host=$2
+      shift 2
+      ;;
+    --vmrun)
+      (( $# >= 2 )) || { usage; exit 64; }
+      vmrun=$2
+      shift 2
+      ;;
+    --no-ssh)
+      check_ssh=0
+      shift
+      ;;
+    --wait)
+      (( $# >= 2 )) || { usage; exit 64; }
+      [[ "$2" == <-> ]] || { print -u2 'wait must be a non-negative integer'; exit 64; }
+      wait_seconds=$2
+      shift 2
+      ;;
+    --require)
+      (( $# >= 2 )) || { usage; exit 64; }
+      parse_required "$2" || { print -u2 -r -- "invalid capability list: $2"; exit 64; }
+      require_explicit=1
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      print -u2 -r -- "unknown argument: $1"
+      usage
+      exit 64
+      ;;
+  esac
+done
+
+if (( ! check_ssh )); then
+  if (( require_explicit )); then
+    for capability in "${required[@]}"; do
+      if [[ "$capability" == ssh || "$capability" == codex ]]; then
+        print -u2 -- '--no-ssh conflicts with required ssh or codex capability'
+        exit 64
+      fi
+    done
+  else
+    required=(vm tools)
+  fi
+fi
+
+need_vm=0
+need_ssh=0
+need_codex=0
+for capability in "${required[@]}"; do
+  case "$capability" in
+    vm) need_vm=1 ;;
+    tools) need_vm=1 ;;
+    ssh) need_ssh=1 ;;
+    codex) need_ssh=1; need_codex=1 ;;
+  esac
+done
+if (( require_explicit && ! need_ssh )); then
+  check_ssh=0
+fi
+
+if (( need_vm )); then
+  [[ -x "$wrapper" ]] || { print -u2 -r -- "wrapper is not executable: $wrapper"; exit 69; }
+  [[ -x "$vmrun" ]] || { print -u2 -r -- "vmrun is not executable: $vmrun"; exit 69; }
+  [[ -n "$vmx" && -f "$vmx" ]] || { print -u2 'vmx_path is missing or invalid'; exit 78; }
+fi
+if (( check_ssh )); then
+  [[ -f "$script_dir/guest-probe.ps1" ]] || { print -u2 'guest probe is missing'; exit 69; }
+fi
+
+error_file=$(mktemp -t windows-vm-status.XXXXXX) || exit 73
+cleanup() {
+  rm -f -- "$error_file"
+}
+trap cleanup EXIT
+
+sanitize_error() {
+  local message
+  message=$(<"$error_file")
+  message=${message//$'\r'/}
+  message=${message//$'\n'/'; '}
+  message=${message//$'\t'/ }
+  print -r -- "${message[1,300]:-command failed without a diagnostic}"
+}
+
+run_vmrun() {
+  WINDOWS_VMRUN_PATH="$vmrun" WINDOWS_VM_VMX_PATH="$vmx" "$wrapper" "$@"
+}
+
+if (( check_ssh )); then
+  encoded_probe=$(
+    /usr/bin/iconv -f UTF-8 -t UTF-16LE "$script_dir/guest-probe.ps1" |
+      /usr/bin/base64 |
+      /usr/bin/tr -d '\n'
+  ) || { print -u2 'failed to encode guest probe'; exit 69; }
+  guest_probe_command="C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded_probe"
+  if (( need_codex )); then
+    guest_probe_command="set \"WINDOWS_VM_CONTROL_CHECK_CODEX=1\" && $guest_probe_command"
+  fi
+fi
+
+probe_once() {
+  local running candidate tools_raw probe_output ssh_error
+  vm_power=unknown
+  tools=unknown
+  guest_ip=unknown
+  ssh_route=unknown
+  route_match=unknown
+  ssh_state=skipped
+  computer=unknown
+  guest_user=unknown
+  codex_state=unknown
+  codex_path=not_found
+  codex_version=not_found
+  codex_policy=not_checked
+  vmrun_error=''
+  tools_error=''
+  guest_ip_error=''
+  ssh_error_summary=''
+  hard_failure=0
+
+  if (( need_vm )); then
+    : > "$error_file"
+    if running=$(run_vmrun list 2>"$error_file"); then
+      vm_power=stopped
+      for candidate in "${(@f)running}"; do
+        [[ -f "$candidate" ]] || continue
+        if [[ "$candidate" -ef "$vmx" ]]; then
+          vm_power=running
+          break
+        fi
+      done
+    else
+      vmrun_error=$(sanitize_error)
+    fi
+  fi
+
+  if (( need_vm )) && [[ "$vm_power" == running ]]; then
+    : > "$error_file"
+    if tools_raw=$(run_vmrun checkToolsState 2>"$error_file"); then
+      case "$tools_raw" in
+        running) tools=running ;;
+        '') tools=unknown ;;
+        *) tools=unavailable ;;
+      esac
+    else
+      tools_error=$(sanitize_error)
+    fi
+
+    : > "$error_file"
+    if guest_ip_value=$(run_vmrun getGuestIPAddress 2>"$error_file"); then
+      [[ -n "$guest_ip_value" ]] && guest_ip=$guest_ip_value
+    else
+      guest_ip_error=$(sanitize_error)
+    fi
+  fi
+
+  if (( check_ssh )); then
+    ssh_route_value=$(ssh -G "$ssh_host" 2>/dev/null | awk '$1 == "hostname" { print $2; exit }')
+    if [[ -n "$ssh_route_value" ]]; then
+      ssh_route=$ssh_route_value
+    else
+      ssh_state=alias_unresolved
+      (( need_ssh )) && hard_failure=1
+      return
+    fi
+
+    if [[ "$guest_ip" != unknown ]]; then
+      if [[ "$guest_ip" == "$ssh_route" ]]; then
+        route_match=yes
+      elif [[ "$ssh_route" == <->.<->.<->.<-> ]]; then
+        route_match=no
+      fi
+    fi
+
+    : > "$error_file"
+    if probe_output=$(ssh \
+      -o BatchMode=yes \
+      -o ConnectTimeout=5 \
+      -o ConnectionAttempts=1 \
+      "$ssh_host" \
+      "$guest_probe_command" \
+      2>"$error_file"); then
+      probe_output=${probe_output//$'\r'/}
+      computer=${${(M)${(@f)probe_output}:#computer=*}#computer=}
+      guest_user=${${(M)${(@f)probe_output}:#user=*}#user=}
+      codex_state=${${(M)${(@f)probe_output}:#codex=*}#codex=}
+      codex_path=${${(M)${(@f)probe_output}:#codex_path=*}#codex_path=}
+      codex_version=${${(M)${(@f)probe_output}:#codex_version=*}#codex_version=}
+      codex_policy=${${(M)${(@f)probe_output}:#codex_policy=*}#codex_policy=}
+      if [[ -n "$computer" && -n "$guest_user" ]]; then
+        ssh_state=ok
+        if (( need_codex )) && [[ "$codex_policy" == mismatch || "$codex_policy" == failed ]]; then
+          hard_failure=1
+        fi
+      else
+        ssh_state=probe_failed
+      fi
+    else
+      ssh_error=$(<"$error_file")
+      ssh_error_summary=$(sanitize_error)
+      case "$ssh_error" in
+        *'Could not resolve hostname'*) ssh_state=alias_unresolved; (( need_ssh )) && hard_failure=1 ;;
+        *'REMOTE HOST IDENTIFICATION HAS CHANGED'*|*'Host key verification failed'*) ssh_state=host_key_failed; (( need_ssh )) && hard_failure=1 ;;
+        *'Permission denied'*) ssh_state=authentication_failed; (( need_ssh )) && hard_failure=1 ;;
+        *'Connection timed out'*|*'Operation timed out'*) ssh_state=timeout ;;
+        *'Connection refused'*) ssh_state=refused ;;
+        *) ssh_state=failed ;;
+      esac
+    fi
+  fi
+}
+
+requirements_met() {
+  local capability
+  for capability in "${required[@]}"; do
+    case "$capability" in
+      vm) [[ "$vm_power" == running ]] || return 1 ;;
+      tools) [[ "$tools" == running ]] || return 1 ;;
+      ssh) [[ "$ssh_state" == ok ]] || return 1 ;;
+      codex) [[ "$ssh_state" == ok && "$codex_state" == ok && "$codex_policy" == ok ]] || return 1 ;;
+    esac
+  done
+}
+
+print_status() {
+  print -r -- "vmx=$vmx"
+  print -r -- "ssh_alias=$ssh_host"
+  print -r -- "required=${(j:,:)required}"
+  print -r -- "vm_power=$vm_power"
+  print -r -- "tools=$tools"
+  print -r -- "guest_ip=$guest_ip"
+  [[ -n "$vmrun_error" ]] && print -r -- "vmrun_error=$vmrun_error"
+  [[ -n "$tools_error" ]] && print -r -- "tools_error=$tools_error"
+  [[ -n "$guest_ip_error" ]] && print -r -- "guest_ip_error=$guest_ip_error"
+  print -r -- "ssh_route=$ssh_route"
+  print -r -- "route_match=$route_match"
+  print -r -- "ssh=$ssh_state"
+  [[ -n "$ssh_error_summary" ]] && print -r -- "ssh_error=$ssh_error_summary"
+  if [[ "$ssh_state" == ok ]]; then
+    print -r -- "computer=$computer"
+    print -r -- "user=$guest_user"
+  fi
+  if (( need_codex )) && [[ "$ssh_state" == ok ]]; then
+    print -r -- "codex=$codex_state"
+    print -r -- "codex_path=$codex_path"
+    print -r -- "codex_version=$codex_version"
+    print -r -- "codex_policy=$codex_policy"
+  fi
+}
+
+now_epoch() {
+  /bin/date +%s
+}
+
+start_epoch=$(now_epoch)
+deadline=$(( start_epoch + wait_seconds ))
+while true; do
+  probe_once
+  if requirements_met; then
+    print_status
+    exit 0
+  fi
+  current_epoch=$(now_epoch)
+  if (( hard_failure || current_epoch >= deadline )); then
+    print_status
+    exit 1
+  fi
+  sleep 1
+done

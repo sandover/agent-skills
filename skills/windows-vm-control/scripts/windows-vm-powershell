@@ -1,0 +1,102 @@
+#!/bin/zsh
+# Run one exact host PowerShell script through one bounded SSH connection.
+# Encode for Windows PowerShell so nested shell quoting is not part of the API.
+# Preserve caller stdin plus remote stdout, stderr, and exit status.
+# Reject unsafe command-line payload sizes before any network connection.
+# Create no guest file and never print the script or its encoded contents.
+
+set -u
+
+usage() {
+  print -u2 'usage: windows-vm-powershell [--ssh HOST] [--timeout SECONDS] /absolute/path/script.ps1'
+}
+
+config_root="${XDG_CONFIG_HOME:-${HOME}/.config}"
+config_path="${WINDOWS_VM_CONTROL_CONFIG:-${config_root}/windows-vm-control/config.json}"
+
+read_config() {
+  local key=$1
+  if [[ -f "$config_path" ]]; then
+    /usr/bin/plutil -extract "$key" raw -o - "$config_path" 2>/dev/null || true
+  fi
+}
+
+ssh_host="${WINDOWS_VM_SSH_ALIAS:-$(read_config ssh_alias)}"
+ssh_host="${ssh_host:-windows-vm}"
+timeout_seconds=30
+max_encoded_chars=7000
+script_path=''
+
+while (( $# > 0 )); do
+  case "$1" in
+    --ssh)
+      (( $# >= 2 )) || { usage; exit 64; }
+      ssh_host=$2
+      shift 2
+      ;;
+    --timeout)
+      (( $# >= 2 )) || { usage; exit 64; }
+      [[ "$2" == <-> && "$2" != 0 ]] || { print -u2 'timeout must be a positive integer'; exit 64; }
+      timeout_seconds=$2
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      (( $# == 1 )) || { usage; exit 64; }
+      script_path=$1
+      shift
+      ;;
+    -*)
+      print -u2 -r -- "unknown argument: $1"
+      usage
+      exit 64
+      ;;
+    *)
+      [[ -z "$script_path" ]] || { print -u2 'only one PowerShell script is allowed'; exit 64; }
+      script_path=$1
+      shift
+      ;;
+  esac
+done
+
+[[ -n "$script_path" ]] || { usage; exit 64; }
+[[ "$script_path" == /* ]] || { print -u2 'PowerShell script path must be absolute'; exit 64; }
+[[ "${script_path:l}" == *.ps1 ]] || { print -u2 'PowerShell script must use the .ps1 extension'; exit 64; }
+[[ -e "$script_path" ]] || { print -u2 -r -- "PowerShell script does not exist: $script_path"; exit 66; }
+[[ -f "$script_path" ]] || { print -u2 -r -- "PowerShell script is not a regular file: $script_path"; exit 66; }
+[[ -r "$script_path" ]] || { print -u2 -r -- "PowerShell script is not readable: $script_path"; exit 77; }
+
+encoded_command=$(
+  /usr/bin/iconv -f UTF-8 -t UTF-16LE "$script_path" |
+    /usr/bin/base64 |
+    /usr/bin/tr -d '\n'
+) || { print -u2 'failed to encode PowerShell script as UTF-16LE'; exit 65; }
+
+encoded_chars=${#encoded_command}
+if (( encoded_chars > max_encoded_chars )); then
+  print -u2 -r -- "PowerShell script is too large for safe EncodedCommand transport (${encoded_chars} encoded characters; limit ${max_encoded_chars})"
+  print -u2 'Use the explicit copy-and-run recipe for a large exact script, or bounded Codex for adaptive work.'
+  exit 65
+fi
+
+remote_command="C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded_command"
+
+/usr/bin/perl -e 'alarm shift; exec @ARGV' "$timeout_seconds" \
+  ssh \
+  -o BatchMode=yes \
+  -o ConnectTimeout=5 \
+  -o ConnectionAttempts=1 \
+  -o ServerAliveInterval=5 \
+  "$ssh_host" \
+  "$remote_command"
+result=$?
+
+if (( result == 142 )); then
+  print -u2 -r -- "PowerShell command timed out after ${timeout_seconds}s"
+  exit 124
+fi
+exit "$result"

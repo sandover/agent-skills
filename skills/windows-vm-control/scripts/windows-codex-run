@@ -1,0 +1,366 @@
+#!/bin/zsh
+# Run one bounded Codex task in the Windows guest through the canonical helpers.
+# Resolve the executable, version, and persistent policy fresh on every run.
+# Read the caller prompt from stdin and emit native Codex JSONL without a guest file.
+# Observe request events and stop the recorded guest process tree before SSH.
+# Keep process, cleanup, and thread metadata on stderr.
+# Require a trusted Git checkout unless the caller opts into a non-Git directory.
+
+set -u
+
+usage() {
+  print -u2 'usage: windows-codex-run --cwd WINDOWS_DIR [--ssh HOST] [--timeout SECONDS] [--model MODEL] [--reasoning-effort EFFORT] [--service-tier TIER] [--allow-non-git]'
+}
+
+script_dir=${0:A:h}
+status_script="$script_dir/windows-vm-status"
+powershell_script="$script_dir/windows-vm-powershell"
+config_root="${XDG_CONFIG_HOME:-${HOME}/.config}"
+config_path="${WINDOWS_VM_CONTROL_CONFIG:-${config_root}/windows-vm-control/config.json}"
+
+read_config() {
+  local key=$1
+  if [[ -f "$config_path" ]]; then
+    /usr/bin/plutil -extract "$key" raw -o - "$config_path" 2>/dev/null || true
+  fi
+}
+
+ssh_host="${WINDOWS_VM_SSH_ALIAS:-$(read_config ssh_alias)}"
+ssh_host="${ssh_host:-windows-vm}"
+working_directory=''
+timeout_seconds=900
+model=''
+reasoning_effort=''
+service_tier=''
+allow_non_git=0
+
+valid_value() {
+  local value=$1
+  [[ -n "$value" && "$value" != *$'\r'* && "$value" != *$'\n'* ]]
+}
+
+valid_option_token() {
+  local value=$1
+  [[ -n "$value" && "$value" != *[!A-Za-z0-9_-]* ]]
+}
+
+while (( $# > 0 )); do
+  case "$1" in
+    --cwd)
+      (( $# >= 2 )) || { usage; exit 64; }
+      working_directory=$2
+      shift 2
+      ;;
+    --ssh)
+      (( $# >= 2 )) || { usage; exit 64; }
+      ssh_host=$2
+      shift 2
+      ;;
+    --timeout)
+      (( $# >= 2 )) || { usage; exit 64; }
+      [[ "$2" == <-> && "$2" != 0 ]] || { print -u2 'timeout must be a positive integer'; exit 64; }
+      timeout_seconds=$2
+      shift 2
+      ;;
+    --model)
+      (( $# >= 2 )) || { usage; exit 64; }
+      valid_value "$2" || { print -u2 'model must be a non-empty single-line value'; exit 64; }
+      model=$2
+      shift 2
+      ;;
+    --reasoning-effort)
+      (( $# >= 2 )) || { usage; exit 64; }
+      valid_option_token "$2" || { print -u2 'reasoning effort must use letters, numbers, underscore, or hyphen'; exit 64; }
+      reasoning_effort=$2
+      shift 2
+      ;;
+    --service-tier)
+      (( $# >= 2 )) || { usage; exit 64; }
+      valid_option_token "$2" || { print -u2 'service tier must use letters, numbers, underscore, or hyphen'; exit 64; }
+      service_tier=$2
+      shift 2
+      ;;
+    --allow-non-git)
+      allow_non_git=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      print -u2 -r -- "unknown argument: $1"
+      usage
+      exit 64
+      ;;
+  esac
+done
+
+[[ -n "$working_directory" ]] || { print -u2 '--cwd is required'; usage; exit 64; }
+valid_value "$working_directory" || { print -u2 '--cwd must be a non-empty single-line value'; exit 64; }
+prompt_text=$(<&0)
+[[ -n "$prompt_text" ]] || { print -u2 'prompt stdin is empty'; exit 64; }
+[[ -x "$status_script" ]] || { print -u2 -r -- "readiness helper is not executable: $status_script"; exit 69; }
+[[ -x "$powershell_script" ]] || { print -u2 -r -- "PowerShell helper is not executable: $powershell_script"; exit 69; }
+
+status_output=$("$status_script" --ssh "$ssh_host" --require codex --wait 0 2>&1)
+status_result=$?
+if (( status_result != 0 )); then
+  print -u2 -r -- "$status_output"
+  ssh_state=''
+  codex_policy=''
+  status_lines=("${(@f)status_output}")
+  for status_line in "${status_lines[@]}"; do
+    case "$status_line" in
+      ssh=*) ssh_state=${status_line#ssh=} ;;
+      codex_policy=*) codex_policy=${status_line#codex_policy=} ;;
+    esac
+  done
+  if [[ "$ssh_state" != ok ]]; then
+    print -u2 "readiness=ssh-failed state=${ssh_state:-unknown}"
+    exit 71
+  fi
+  if [[ "$codex_policy" == mismatch || "$codex_policy" == failed ]]; then
+    print -u2 'authority=policy-check-failed'
+    exit 72
+  fi
+  print -u2 'readiness=codex-failed'
+  exit 70
+fi
+
+codex_path=''
+codex_version=''
+codex_policy=''
+status_lines=("${(@f)status_output}")
+for status_line in "${status_lines[@]}"; do
+  case "$status_line" in
+    codex_path=*) codex_path=${status_line#codex_path=} ;;
+    codex_version=*) codex_version=${status_line#codex_version=} ;;
+    codex_policy=*) codex_policy=${status_line#codex_policy=} ;;
+  esac
+done
+[[ -n "$codex_path" && "$codex_path" != not_found ]] || { print -u2 'readiness did not return a Codex executable'; exit 70; }
+[[ -n "$codex_version" && "$codex_version" != not_found ]] || { print -u2 'readiness did not return a Codex version'; exit 70; }
+[[ "$codex_policy" == ok ]] || { print -u2 'authority=policy-check-failed'; exit 72; }
+
+ps_quote() {
+  local value=$1
+  value=${value//$'\r'/}
+  value=${value//$'\n'/}
+  value=${value//\'/\'\'}
+  print -r -- "'$value'"
+}
+
+stop_process_tree() {
+  local root_pid=$1 child_pid
+  for child_pid in ${(f)"$(pgrep -P "$root_pid" 2>/dev/null)"}; do
+    stop_process_tree "$child_pid"
+  done
+  kill -TERM "$root_pid" 2>/dev/null || true
+}
+
+classify_event() {
+  local line=$1 event_thread clean_thread current_type
+  local -a event_types
+  clean_thread=''
+  command -v jq >/dev/null 2>&1 || return 0
+  event_types=("${(@f)$(print -r -- "$line" | jq -r '[(.type // ""), (.event_type // ""), (.request_type // "")] | map(ascii_downcase) | map(select(length > 0)) | .[]' 2>/dev/null)}") || return 0
+  event_thread=$(print -r -- "$line" | jq -r '(.thread_id // .threadId // .thread.id // "") | tostring' 2>/dev/null) || event_thread=''
+  if [[ -n "$event_thread" ]]; then
+    clean_thread=$(print -r -- "$event_thread" | tr -cd '[:alnum:]_.:-' | cut -c1-128)
+    if [[ -n "$clean_thread" && -z "$thread_id" ]]; then
+      thread_id=$clean_thread
+      print -u2 -r -- "guest_thread_id=$thread_id"
+    fi
+  fi
+  for current_type in "${event_types[@]}"; do
+    case "$current_type" in
+      *approval*) request_type=approval; request_code=73; request_thread_id=$clean_thread ;;
+      *request*input*|*input*request*|*user*input*) request_type=input; request_code=74; request_thread_id=$clean_thread ;;
+      turn.failed|error) turn_failed=1 ;;
+    esac
+  done
+}
+
+temp_dir=$(mktemp -d -t windows-codex-run.XXXXXX) || { print -u2 'failed to create runner temporary directory'; exit 73; }
+stdout_fifo="$temp_dir/stdout"
+stderr_file="$temp_dir/stderr"
+result_file="$temp_dir/result"
+remote_script="$temp_dir/run.ps1"
+mkfifo "$stdout_fifo" || { print -u2 'failed to create runner output pipe'; exit 73; }
+
+guest_active=0
+cleanup_failed=0
+
+guest_runner_pid() {
+  local pid_value
+  [[ -f "$stderr_file" ]] || return 1
+  pid_value=$(sed -n 's/^guest_runner_pid=\([0-9][0-9]*\)\r*$/\1/p' "$stderr_file" | tail -n 1)
+  [[ "$pid_value" == <-> && "$pid_value" != 0 ]] || return 1
+  print -r -- "$pid_value"
+}
+
+stop_guest_process_tree() {
+  local pid_value attempt result
+  pid_value=''
+  for attempt in {1..20}; do
+    pid_value=$(guest_runner_pid 2>/dev/null) && break
+    sleep 0.1
+  done
+  if [[ -z "$pid_value" ]]; then
+    print -u2 'guest_cleanup=no-recorded-pid'
+    return 1
+  fi
+  /usr/bin/perl -e 'alarm shift; exec @ARGV' 10 \
+    ssh \
+    -o BatchMode=yes \
+    -o ConnectTimeout=5 \
+    -o ConnectionAttempts=1 \
+    "$ssh_host" \
+    "C:\\Windows\\System32\\taskkill.exe /PID $pid_value /T /F" \
+    >/dev/null 2>&1
+  result=$?
+  if (( result != 0 )); then
+    print -u2 -r -- "guest_cleanup=failed root_pid=$pid_value"
+    return 1
+  fi
+  print -u2 -r -- "guest_cleanup=ok root_pid=$pid_value"
+  guest_active=0
+  return 0
+}
+
+cleanup() {
+  if [[ -n "${helper_pid:-}" ]] && kill -0 "$helper_pid" 2>/dev/null; then
+    stop_process_tree "$helper_pid"
+  fi
+  rm -rf -- "$temp_dir"
+}
+
+handle_signal() {
+  if (( guest_active )); then
+    stop_guest_process_tree || cleanup_failed=1
+  fi
+  cleanup
+  (( cleanup_failed )) && exit 76
+  exit 130
+}
+
+trap cleanup EXIT
+trap handle_signal INT TERM
+
+codex_path_ps=$(ps_quote "$codex_path")
+working_directory_ps=$(ps_quote "$working_directory")
+model_ps=$(ps_quote "$model")
+reasoning_effort_ps=$(ps_quote "$reasoning_effort")
+service_tier_ps=$(ps_quote "$service_tier")
+
+{
+  print -r -- "\$p = $codex_path_ps"
+  print -r -- "\$d = $working_directory_ps"
+  print -r -- "\$m = $model_ps"
+  print -r -- "\$r = $reasoning_effort_ps"
+  print -r -- "\$s = $service_tier_ps"
+  print -r -- "\$n = $allow_non_git"
+  print -r -- '
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+$prompt = @($input) -join [Environment]::NewLine
+if (!$prompt) { [Console]::Error.WriteLine("prompt=empty"); exit 64 }
+if (![System.IO.Path]::IsPathRooted($d) -or !(Test-Path -LiteralPath $d -PathType Container)) { [Console]::Error.WriteLine("workspace=missing-or-not-absolute"); exit 70 }
+$vo = @(& $p --version 2> $null)
+$vx = $LASTEXITCODE
+$v = $vo | Select-Object -First 1
+if ($vx -ne 0 -or !$v) { [Console]::Error.WriteLine("codex=version-check-failed"); exit 69 }
+$v = $v.ToString().Trim()
+[Console]::Error.WriteLine(("guest_runner_codex_version=" + $v))
+$qo = @(& $p doctor --json 2> $null)
+$qx = $LASTEXITCODE
+$q = $qo | Out-String
+try { $qd = ($q | ConvertFrom-Json).checks."sandbox.helpers".details } catch { $qd = $null }
+if ($qx -ne 0 -or $qd."approval policy" -ne "Never" -or $qd."filesystem sandbox" -ne "unrestricted" -or $qd."network sandbox" -ne "enabled") { [Console]::Error.WriteLine("authority=mismatch"); exit 72 }
+$a = @("exec", "--json", "--cd", $d)
+if ($n) { $a += "--skip-git-repo-check" }
+if ($m) { $a += @("--model", $m) }
+if ($r) { $a += @("-c", ("model_reasoning_effort=" + $r)) }
+if ($s) { $a += @("-c", ("service_tier=" + $s)) }
+$a += "-"
+try { [Console]::Error.WriteLine(("guest_runner_pid=" + $PID)); $prompt | & $p @a; $x = $LASTEXITCODE } catch { [Console]::Error.WriteLine("codex=process-error"); exit 75 }
+exit $x
+'
+} > "$remote_script"
+
+print -u2 -r -- "readiness=ok codex_version=$codex_version"
+print -u2 -r -- "guest_cwd=$working_directory"
+
+request_code=0
+request_type=''
+thread_id=''
+request_thread_id=''
+turn_failed=0
+timed_out=0
+transport_timeout=$(( timeout_seconds + 20 ))
+(
+  "$powershell_script" --ssh "$ssh_host" --timeout "$transport_timeout" "$remote_script" <<< "$prompt_text"
+  print -r -- "$?" > "$result_file"
+) > "$stdout_fifo" 2> "$stderr_file" &
+helper_pid=$!
+guest_active=1
+deadline_epoch=$(( $(/bin/date +%s) + timeout_seconds ))
+exec {stdout_fd}< "$stdout_fifo"
+while true; do
+  if IFS= read -r -t 1 line <&$stdout_fd; then
+    print -r -- "$line"
+    classify_event "$line"
+    if (( request_code != 0 )); then
+      stop_guest_process_tree || cleanup_failed=1
+      stop_process_tree "$helper_pid"
+      break
+    fi
+    continue
+  fi
+  [[ -f "$result_file" ]] && break
+  if (( $(/bin/date +%s) >= deadline_epoch )); then
+    timed_out=1
+    stop_guest_process_tree || cleanup_failed=1
+    stop_process_tree "$helper_pid"
+    break
+  fi
+done
+exec {stdout_fd}<&-
+wait "$helper_pid" 2>/dev/null
+if [[ -f "$result_file" ]]; then
+  helper_result=$(<"$result_file")
+else
+  helper_result=125
+fi
+if (( ! timed_out && request_code == 0 )); then
+  guest_active=0
+fi
+if [[ -s "$stderr_file" ]]; then
+  cat "$stderr_file" >&2
+fi
+
+if (( cleanup_failed )); then
+  print -u2 'guest_cleanup=unverified'
+  exit 76
+fi
+if (( request_code != 0 )); then
+  print -u2 -r -- "codex_request=$request_type thread_id=${request_thread_id:-${thread_id:-unknown}}"
+  exit "$request_code"
+fi
+if (( timed_out )); then
+  print -u2 -- "codex_timeout=${timeout_seconds}s"
+  exit 124
+fi
+if (( turn_failed != 0 )); then
+  print -u2 'codex=turn-failed'
+  exit 75
+fi
+case "$helper_result" in
+  0) exit 0 ;;
+  124) print -u2 -- "codex_timeout=${timeout_seconds}s"; exit 124 ;;
+  72) print -u2 'authority=policy-check-failed'; exit 72 ;;
+  69) print -u2 'codex=version-check-failed'; exit 70 ;;
+  70) print -u2 'workspace=precondition-failed'; exit 70 ;;
+  *) print -u2 "ssh_or_codex_exit=$helper_result"; exit 75 ;;
+esac

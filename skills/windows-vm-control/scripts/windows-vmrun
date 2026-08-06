@@ -1,4 +1,10 @@
 #!/bin/zsh
+# Wrap VMware Fusion vmrun with one configuration and Keychain boundary.
+# Keep the exact VM target and local executable explicit and inspectable.
+# Treat Guest Operations and VM unlock credentials as optional capabilities.
+# Let doctor gate those capabilities only when the caller requires them.
+# Keep SSH and guest Codex readiness in windows-vm-status.
+
 set -euo pipefail
 
 if (( $# < 1 )); then
@@ -42,6 +48,30 @@ keychain_item_exists() {
 }
 
 if [[ "$command_name" == "doctor" ]]; then
+  require_guest_ops=0
+  require_vm_unlock=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --require)
+        (( $# >= 2 )) || { print -u2 'doctor --require needs guest-ops or vm-unlock'; exit 64; }
+        case "$2" in
+          guest-ops) require_guest_ops=1 ;;
+          vm-unlock) require_vm_unlock=1 ;;
+          *) print -u2 -r -- "unknown doctor capability: $2"; exit 64 ;;
+        esac
+        shift 2
+        ;;
+      -h|--help)
+        print 'usage: windows-vmrun doctor [--require guest-ops] [--require vm-unlock]'
+        exit 0
+        ;;
+      *)
+        print -u2 -r -- "unknown doctor argument: $1"
+        exit 64
+        ;;
+    esac
+  done
+
   integer failures=0
 
   if [[ -x "$vmrun_path" ]]; then
@@ -70,30 +100,36 @@ if [[ "$command_name" == "doctor" ]]; then
   fi
 
   if [[ -n "$guest_login" ]]; then
-    print -r -- "ok guest login configured: $guest_login"
+    print -r -- "note guest-ops login configured: $guest_login"
   else
-    print -u2 -r -- "missing guest_login"
-    (( failures += 1 ))
+    print -r -- "note guest-ops login is not configured"
+    (( require_guest_ops )) && (( failures += 1 ))
   fi
 
-  if [[ -n "$guest_keychain_account" && -n "$guest_keychain_service" ]] &&
-    keychain_item_exists "$guest_keychain_account" "$guest_keychain_service"; then
-    print -r -- "ok guest credential in Keychain"
+  if [[ -z "$guest_keychain_account" || -z "$guest_keychain_service" ]]; then
+    print -r -- "note guest-ops credential configuration is incomplete"
+    (( require_guest_ops )) && (( failures += 1 ))
+  elif keychain_item_exists "$guest_keychain_account" "$guest_keychain_service"; then
+    print -r -- "note guest-ops credential is available"
   else
-    print -u2 -r -- "missing guest Keychain configuration or item"
-    (( failures += 1 ))
+    print -r -- "note guest-ops credential is missing or inaccessible"
+    (( require_guest_ops )) && (( failures += 1 ))
   fi
 
   if [[ -n "$vm_keychain_account" || -n "$vm_keychain_service" ]]; then
     if [[ -n "$vm_keychain_account" && -n "$vm_keychain_service" ]] &&
       keychain_item_exists "$vm_keychain_account" "$vm_keychain_service"; then
-      print -r -- "ok VM unlock credential in Keychain"
+      print -r -- "note VM unlock credential is available"
+    elif [[ -z "$vm_keychain_account" || -z "$vm_keychain_service" ]]; then
+      print -r -- "note VM unlock credential configuration is incomplete"
+      (( require_vm_unlock )) && (( failures += 1 ))
     else
-      print -u2 -r -- "incomplete or missing VM unlock Keychain item"
-      (( failures += 1 ))
+      print -r -- "note VM unlock credential is missing or inaccessible"
+      (( require_vm_unlock )) && (( failures += 1 ))
     fi
   else
     print -r -- "note VM unlock credential not configured"
+    (( require_vm_unlock )) && (( failures += 1 ))
   fi
 
   if (( failures > 0 )); then
@@ -111,22 +147,20 @@ vmrun_args=(-T fusion)
 vm_unlock=''
 guest_password=''
 
-cleanup_secrets() {
-  unset vm_unlock guest_password
-}
-trap cleanup_secrets EXIT
-
 if [[ -n "$vm_keychain_account" || -n "$vm_keychain_service" ]]; then
   if [[ -z "$vm_keychain_account" || -z "$vm_keychain_service" ]]; then
     print -u2 'both VM unlock Keychain account and service are required'
     exit 78
   fi
-  vm_unlock=$(
+  if ! vm_unlock=$(
     /usr/bin/security find-generic-password \
       -a "$vm_keychain_account" \
       -s "$vm_keychain_service" \
       -w
-  )
+  ); then
+    print -u2 'VM unlock Keychain lookup failed; run windows-vmrun doctor'
+    exit 78
+  fi
   vmrun_args+=(-vp "$vm_unlock")
 fi
 
@@ -157,12 +191,15 @@ if [[ "$needs_guest_credentials" == true ]]; then
     print -u2 'guest login and Keychain identifiers are required for this command'
     exit 78
   fi
-  guest_password=$(
+  if ! guest_password=$(
     /usr/bin/security find-generic-password \
       -a "$guest_keychain_account" \
       -s "$guest_keychain_service" \
       -w
-  )
+  ); then
+    print -u2 'guest Keychain lookup failed; run windows-vmrun doctor'
+    exit 78
+  fi
   vmrun_args+=(-gu "$guest_login" -gp "$guest_password")
 fi
 

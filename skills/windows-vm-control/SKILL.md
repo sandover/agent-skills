@@ -3,115 +3,106 @@ name: windows-vm-control
 description: Control and automate a VMware Fusion Windows VM from a host Mac Codex session. Use for Windows commands, files, Git, builds, tests, VM lifecycle, native Windows GUI interaction, screenshots, login or UAC boundaries, and bounded or managed delegation to Codex inside the VM.
 ---
 
-# Control a Windows VM from the host
+# Windows VM Control
 
-## Working model
+Treat the Windows VM as another computer. Check its current state before you choose how to control it.
 
-- **Host:** The Mac running this Codex session and VMware Fusion.
-- **Windows guest:** The Windows installation running inside VMware Fusion.
-- **Host agent:** This Codex session. Own the task, user communication, VM
-  management, authorization boundaries, and final evidence. In direct
-  execution, it also owns the Windows work.
-- **Guest agent:** An optional Codex process inside Windows. When delegation
-  starts, it becomes the sole executor for the delegated outcome.
+## System model
 
-Choose both an execution mode and a Windows session.
+The Mac agent coordinates the work. The Windows VM is the target.
 
-### Choose the execution mode
+The Mac agent has four access paths:
 
-| Mode | Use it when | Connection |
+| Access path | Use it for | A successful check proves |
 | --- | --- | --- |
-| **Direct execution** — default | The host agent can use Windows tools, inspect or change guest files, and gather evidence itself. | SSH carries commands, stdout, and stderr. |
-| **Bounded delegation** | One self-contained Windows outcome benefits from guest-local reasoning. | SSH runs one `codex exec --json` turn. |
-| **Managed delegation** | The host must guide a guest agent across turns, interrupt it, or answer its requests. | SSH carries one tested `codex app-server --stdio` controller. |
+| VMware `vmrun` and VMware Tools | VM power, guest IP, and guest process launch | Fusion and Tools can reach this VM |
+| SSH | Commands, files, Git, builds, tests, and background processes | The network, `sshd`, SSH trust, and one Windows account work |
+| Fusion desktop | Visible apps, focus, login, dialogs, and screenshots | The visible Windows session did the action |
+| Guest Codex | Longer Windows work that needs judgment | Guest Codex ran and returned text |
 
-Use one executor at a time. After a guest agent starts, the host agent stops
-independent guest commands and file inspection until delegation ends. The host
-may complete a specific support action requested by the guest or an action that
-requires host control of the Windows desktop. Before resuming direct execution,
-wait for the guest turn to end and inspect current state.
+A check on one path proves only that path. An SSH result does not prove a visible desktop result. A screenshot does not prove that a background service is healthy. A guest Codex report still needs an independent check.
 
-### Choose the Windows session
+The system has stored state and live state.
 
-| Session | Use it when | Control |
-| --- | --- | --- |
-| **SSH session** | Files, Git, builds, tests, services, logs, and command-line applications are sufficient. | SSH |
-| **Signed-in desktop** | A process must appear on screen or visible behavior matters. | VMware Guest Operations, Windows UI Automation, or host control of Fusion |
-| **UAC secure desktop** | Windows requests protected elevation. | Inspect the prompt. Approve a known, expected consequence of an authorized action through host control of Fusion. Escalate when the prompt is unexpected, ambiguous, exceeds the task's authority, or needs user credentials. |
+Stored state remains across a restart. It includes the `.vmx` path, virtual disks, Windows identity, SSH host key, SSH alias, persistent user environment, and guest Codex configuration.
 
-SSH and guest-agent output do not prove what appeared on screen. A guest agent
-launched through SSH does not run in the signed-in desktop session. Keep
-desktop control with the host agent.
+Live state can change at any time. It includes VM power, Tools readiness, guest IP, SSH reachability, desktop login, process environment, focus, and running commands.
 
-## Operating path
+The guest IP can change while the VM identity stays the same. A running Windows process keeps its old environment after a persistent environment value changes. Host files, guest files, user settings, Codex configuration, and desktop state are separate stores.
 
-1. **Scope:** Establish the outcome, proof, boundaries, and authorized effects.
-2. **Access:** Try the cheapest applicable connection. Repair only the failed
-   layer.
-3. **Choose:** Prefer direct execution. Delegate only when guest-local reasoning
-   repays its coordination cost. Add desktop control only for visible behavior.
-4. **Execute:** Let the selected executor own the Windows work. Provide only
-   host-controlled support during delegation.
-5. **Verify:** Match evidence to the claim.
-6. **Close:** Stop only task-owned processes and preserve useful guest state.
+## Work sequence
 
-For a configured, running VM, try starting with the task through SSH:
+1. Define the result. Name the access path that can prove it.
+2. Run the read-only status check when access or identity may have changed. Run it with host access. A sandbox can block Fusion, Keychain, and the private VM network. Run bundled commands from the skill directory or use an absolute path:
 
-```bash
-ssh -o BatchMode=yes windows-vm \
-  'powershell.exe -NoProfile -NonInteractive -Command "$env:COMPUTERNAME; whoami"'
-```
+   ```bash
+   scripts/windows-vm-status
+   ```
 
-Classify an access failure before changing setup:
+3. Classify a failure before you change state. Read [state-and-access.md](references/state-and-access.md).
+4. Select the first applicable path in this order: direct SSH, deterministic PowerShell, bounded Codex, managed Codex, then VMware Tools or the Fusion desktop.
+5. Use one writer for each checkout or process tree. The Mac agent keeps control of scope and final verification.
+6. Check the result through the access path that owns it.
+7. Remove temporary files and stop only task-owned temporary processes.
 
-- If `windows-vm` does not resolve, repair the host alias.
-- If it resolves but cannot connect, inspect the guest address, `sshd`, firewall
-  profile, and authentication.
-- If the user authorizes setup changes, perform the repair and retry SSH.
-  Approve known UAC prompts yourself through host control of Fusion.
-- Without authorization, use Guest Operations only for an authorized desktop
-  task it can complete directly; otherwise stop and give setup instructions.
+Escalate after one failed quoting attempt, nested or multiline logic, adaptive work, or about 30 seconds of host command composition. Do not keep composing a direct command after that point.
 
-Read [configuration.md](references/configuration.md) for VMware setup, Guest
-Operations repair, or VM startup. Read [ssh.md](references/ssh.md) for SSH
-bootstrapping and repair.
+## Execution modes
 
-## Control planes
+Run each `scripts/...` recipe from the skill directory. Use the script's absolute path when your current directory is elsewhere.
 
-| Plane | Use for | Do not use for |
-| --- | --- | --- |
-| SSH | PowerShell, files, Git, builds, tests, logs, and guest-agent connections | Proving or controlling visible desktop state |
-| `scripts/windows-vmrun` | VM power, VMware Tools, guest processes, file transfer, screenshots, keyboard input, and signed-in-session launches | Routine shell work or commands that need stdout |
-| Windows automation or host control of Fusion | Named controls, foreground windows, UAC, clicks, typing, and visual judgment | Work a command or application API can prove |
+| Path | Use it for | Canonical recipe | Stop or escalate when |
+| --- | --- | --- | --- |
+| Direct SSH | One or two exact commands | `ssh -o BatchMode=yes windows-vm whoami` | Quoting, multiline logic, or adaptation is needed |
+| Deterministic PowerShell | Exact multi-statement work | `scripts/windows-vm-powershell /absolute/host/task.ps1` | The script is oversized, adaptive, or needs a guest prompt |
+| Bounded Codex | One adaptive Windows outcome | `scripts/windows-codex-run --cwd 'C:\src\project' < /absolute/host/handoff.txt` | The task needs credentials, identity, destructive action, wider scope, or follow-up steering |
+| Managed Codex | Live steering, interruption, or approval handling across turns | A tested `codex app-server --stdio` controller | No tested controller exists; use bounded Codex |
+| VMware Tools or Fusion desktop | SSH recovery, boot, UAC, login, focus, visible apps, or screenshots | Read [configuration.md](references/configuration.md) or [desktop.md](references/desktop.md) | The action is not authorized, the prompt asks for identity, or visible evidence is not needed |
 
-Run bundled commands from this skill's directory or by absolute path. Run
-Keychain-backed `windows-vmrun` commands on the host, not in the sandbox.
+Read [delegation.md](references/delegation.md) for delegation rules.
 
-SSH and Guest Operations can have different users, environments, PATHs, and
-sessions. A failure in one plane does not prove failure in another.
+## Failure map
 
-## Additional references
+Check boundaries from the outside to the inside.
 
-- Read [guest-delegation.md](references/guest-delegation.md) before bounded or
-  managed delegation.
-- Read [desktop-control.md](references/desktop-control.md) before visible
-  application control, input injection, screenshots, or UAC.
+1. The VM is stopped. Inspect Fusion state. Start the exact `.vmx` only when the task authorizes it.
+2. Tools are unavailable. Windows may still be starting. This result says nothing about SSH yet.
+3. The guest IP changed. Compare the live IP with the SSH route. Prove the SSH host key before you update the route.
+4. TCP port 22 is unreachable. Check the VM network, firewall, and `sshd`. Compare the current Mac VMware address with the firewall rule's `RemoteAddress`.
+5. The SSH host key does not match. Prove the VM identity through a trusted path. Do not delete the trusted key to hide the error.
+6. SSH works but a command is missing. Check the SSH account and its process environment. The program may still exist in the visible desktop session.
+7. A command works but the UI differs. Use the desktop path. Capture visible evidence.
+8. A known UAC prompt appears for an authorized action. Check the publisher, program, and result. The Mac agent may approve it through Fusion when no credential is required.
+9. Login, password, passkey, MFA, or identity consent appears. Stop. This boundary belongs to the user.
 
-## Guardrails
+## Evidence rules
 
-- Keep passwords and tokens in credential stores. Do not put them in prompts,
-  repositories, screenshots, command history, or the clipboard.
-- Resolve the exact VM, process, path, repository, and desktop target before
-  changing state.
-- Preserve unrelated guest files, shells, agents, repositories, and dirty Git
-  work. Stop only known task-owned duplicates.
-- Treat VM reset, snapshot restoration, deletion, and power-off as destructive.
-- Let one operator control the visible desktop at a time. If the user or another
-  operator takes control, stop input and resynchronize from fresh state.
-- Approve UAC or a similar non-identity authorization only when the underlying
-  action is already authorized, the target and consequence are clear, and no
-  user credential is required. Ask the user to perform passkeys, passwords,
-  multifactor authentication, and consent that represents the user's identity.
-  Do not weaken UAC or invent an elevation path.
-- Treat a command result, agent message, and screenshot as evidence only for
-  what it directly shows.
+Use evidence that matches the claim.
+
+- Use `vmrun list`, `checkToolsState`, or `getGuestIPAddress` for VM and Tools state.
+- Use a short SSH or Tools command for Windows computer and user identity.
+- Inspect the exact guest path after a file copy.
+- Check the stored environment value. Then start a new process and check its effective value.
+- Capture the desktop after a visible action.
+- Record the process or session ID for long work. Confirm its final state.
+- Check guest-agent claims against files, Git state, focused tests, process state, or the visible UI.
+
+## Safety rules
+
+- Keep passwords, tokens, private keys, and recovery data out of prompts, logs, arguments, screenshots, and repositories.
+- Treat an IP address as a route. Treat an SSH host key as identity.
+- Do not replace a trusted SSH key without separate identity evidence.
+- Do not delete a VM, disk, snapshot, checkout, or broad directory without exact scope and approval.
+- Do not run host and guest writers in the same checkout at the same time.
+- Treat Windows as a persistent workstation. Inspect and preserve its existing tools, checkouts, dirty work, and processes.
+- Set time limits for remote commands and guest-agent sessions.
+- Use `windows-vm-powershell` for a normal exact script. Transfer a script only when it is too large for the helper or SSH recovery requires it.
+- Do not claim visible desktop success from SSH evidence.
+
+## References
+
+- [configuration.md](references/configuration.md) covers the `vmrun` wrapper, local configuration, and Keychain use.
+- [state-and-access.md](references/state-and-access.md) covers live status, SSH failures, file transfer, and stored Windows state.
+- [ssh-bootstrap.md](references/ssh-bootstrap.md) covers first-time OpenSSH setup and its narrow firewall rule.
+- [desktop.md](references/desktop.md) covers visible UI control, focus, login, and UAC.
+- [delegation.md](references/delegation.md) covers guest Codex discovery, bounded delegation, and the managed-controller boundary.
