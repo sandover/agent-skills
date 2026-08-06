@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fresh Rewrite"
+  short_description: "Rebuild sections and documents from a fresh outline"
+  default_prompt: "Use $fresh-rewrite to reconstruct this section or document from a fresh outline."
