@@ -32,7 +32,7 @@ Each method reaches different Windows components and can confirm different facts
 | Fusion capture | Windows screen shown by Fusion | Current Fusion screen image | An RDP or other Windows desktop |
 | Windows Codex | Work where later steps depend on earlier output | What Windows Codex reports | Independent confirmation of completion |
 
-VM disks, files, the SSH host key, settings, and configuration survive restarts. Power, Tools, addresses, routes, process environments, whether a Windows user is signed in, input focus, and running processes can change. A running process does not receive later environment changes.
+VM disks, files, the SSH host key, settings, and configuration survive restarts. Power, Tools, addresses, routes, process environments, whether a Windows user is signed in, input focus, and running processes can change. A running process does not receive later environment changes. A status field may be `unknown` because the requested readiness check did not require that capability.
 
 ## What the agent may do
 

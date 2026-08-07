@@ -20,7 +20,7 @@ Use this for a short PowerShell script whose commands are known before it runs:
 scripts/windows-vm-powershell --timeout 30 /absolute/host/task.ps1
 ```
 
-The helper uses the system Windows PowerShell and preserves stdin, stdout, stderr, and the script exit status. It uses `EncodedCommand` for a small script. For a larger script, it uses a unique file in the Windows temporary directory and removes that file after execution. Exit 76 means cleanup could not be confirmed; stderr names the remaining file.
+The helper uses the system Windows PowerShell and preserves stdin, stdout, stderr, and the script exit status. It uses `EncodedCommand` for a small script. For a larger script, it uses a unique file in the Windows temporary directory and removes that file after execution. Exit 76 means cleanup could not be confirmed; stderr names the remaining file. For machine-readable checks, suppress PowerShell progress output and reserve stdout for the final JSON result.
 
 Set `$ErrorActionPreference = 'Stop'` when any PowerShell error must fail the task. Use UTF-8 with a byte-order mark for non-ASCII Windows PowerShell 5 scripts.
 
@@ -35,7 +35,7 @@ scripts/windows-codex-run \
   < /absolute/host/handoff.txt
 ```
 
-The prompt names the requested outcome, allowed reads and changes, unrelated work to preserve, required checks, and forbidden actions outside the named VM and checkout. Add `--allow-non-git` only for an intentional non-checkout directory. Override the Windows Codex model or reasoning only when the task needs it.
+The prompt names the requested outcome, allowed reads and changes, unrelated work to preserve, required checks, and forbidden actions outside the named VM and checkout. For builds, name the guest OS architecture, target application architecture, and artifact architecture separately. Prefer a project-owned build command that reports its exit phase and artifact evidence; the runner only preserves that output. Add `--allow-non-git` only for an intentional non-checkout directory. Override the Windows Codex model or reasoning only when the task needs it.
 
 Before each launch, the runner finds the current Codex executable and reads the active approval and sandbox settings. The Windows Codex configuration is the only place that sets these values. On the approved test VM they must be `approval_policy = "never"` and `sandbox_mode = "danger-full-access"`. Different values stop the run.
 
