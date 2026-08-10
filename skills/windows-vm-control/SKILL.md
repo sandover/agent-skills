@@ -18,7 +18,9 @@ Mac agent
   -> Fusion -> configured VM
        |-> Tools -> Guest Operations
        |          -> interactive launch -> signed-in Windows desktop -> application
-       |-> virtual network -> SSH route and host key -> Windows account and process -> Windows Codex
+       |-> virtual network -> SSH route and host key -> Windows account and process
+       |                                                    |-> bounded Windows Codex turn
+       |                                                    `-> managed Windows Codex thread
        `-> Fusion screen -> captured image
 ```
 
@@ -30,7 +32,8 @@ Each method reaches different Windows components and can confirm different facts
 | SSH | One Windows account and its inherited environment | Route, SSH host key, account, command output, and exit status | Signed-in Windows desktop or visible windows |
 | Interactive launch | Signed-in Windows desktop | Output from the launched process | Which Windows control has input focus |
 | Fusion capture | Windows screen shown by Fusion | Current Fusion screen image | An RDP or other Windows desktop |
-| Windows Codex | Work where later steps depend on earlier output | What Windows Codex reports | Independent confirmation of completion |
+| Bounded Windows Codex | One self-contained task where later steps depend on earlier output | The turn's event stream and report | Independent confirmation of completion |
+| Managed Windows Codex | A delegated assignment that needs follow-up, steering, interruption, or answered requests | Correlated thread, turn, item, and request events | Signed-in desktop state or independent confirmation |
 
 VM disks, files, the SSH host key, settings, and configuration survive restarts. Power, Tools, addresses, routes, process environments, whether a Windows user is signed in, input focus, and running processes can change. A running process does not receive later environment changes. A status field may be `unknown` because the requested readiness check did not require that capability.
 
@@ -65,12 +68,15 @@ Do not let two agents or processes modify the same checkout or process tree at t
 | VM startup, power, Tools, or address | `vmrun` | [Lifecycle](references/lifecycle.md) |
 | One or two commands known before execution | SSH | [Direct SSH](references/command-work.md#direct-ssh) |
 | A multiline PowerShell script known before execution | SSH PowerShell helper | [Scripted PowerShell](references/command-work.md#scripted-powershell) |
-| Work where each next step can depend on earlier output | Windows Codex | [One Windows Codex run](references/command-work.md#one-windows-codex-run) |
+| One self-contained task where each next step can depend on earlier output | Bounded Windows Codex | [Bounded Windows Codex run](references/command-work.md#bounded-windows-codex-run) |
+| A delegated assignment across turns, or work that may need steering or answered requests | Managed Windows Codex | [Managed delegation](references/managed-delegation.md) |
 | Which window or dialog is visible and has Windows input focus | Interactive launch | [Desktop work](references/desktop-work.md) |
 | SSH or route recovery | Tools, then SSH | [Access recovery](references/access-recovery.md) |
 
-After one quoting failure, nested logic, or about 30 seconds of command composition, move from direct SSH to scripted PowerShell or one Windows Codex run.
+After one quoting failure, nested logic, or about 30 seconds of command composition, move from direct SSH to scripted PowerShell, bounded Windows Codex, or managed delegation.
+
+When managed delegation starts, make Windows Codex the sole executor for that checkout. The Mac agent coordinates, answers requests, and performs host-only desktop or UAC support. It does not run independent checkout commands or duplicate the delegated work until the active turn ends.
 
 ## Finish
 
-Use the method that can show completion. Do not treat an agent report as completion until the relevant file, process, test, or visible Windows check agrees. Remove only temporary files and processes created for the current task.
+Use the method that can show completion. For managed delegation, treat `item/completed` and `turn/completed` as terminal protocol state; treat deltas as progress only. Do not treat an agent report as completion until the relevant file, process, test, or visible Windows check agrees. Remove only temporary files and processes created for the current task.

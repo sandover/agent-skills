@@ -510,4 +510,6 @@ TEST_RUNNER_MODE=timeout TEST_CLEANUP_LOG="$temp_dir/cleanup.log" PATH="$runner_
 rg -q 'taskkill.exe /PID 4321 /T /F' "$temp_dir/cleanup.log" || fail 'timeout did not target the guest process tree'
 rg -q 'codex_timeout=1s' "$temp_dir/err" || fail 'timeout was not reported'
 
+uv run --script "$skill_dir/tests/test_windows_codex_session.py"
+
 print 'host regressions: ok'

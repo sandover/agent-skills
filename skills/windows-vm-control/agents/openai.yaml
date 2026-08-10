@@ -1,4 +1,4 @@
 interface:
   display_name: "Windows VM Control"
-  short_description: "Control Windows from the Mac host"
-  default_prompt: "Use $windows-vm-control to choose how to work with Windows, follow the matching recipe, and confirm that the requested work is complete."
+  short_description: "Control or delegate Windows work from Mac"
+  default_prompt: "Use $windows-vm-control to choose a direct, bounded, or managed Windows workflow and verify the requested result."

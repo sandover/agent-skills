@@ -1,0 +1,722 @@
+#!/usr/bin/env -S uv run --script
+# Maintain one resumable Codex app-server thread in the configured Windows VM.
+# Use stdio JSON-RPC through SSH; stdin accepts controller actions as JSONL.
+# Preserve every app-server stdout line and add only controller/* JSON events.
+# Persist identifiers and lifecycle state, never prompts, command text, or secrets.
+# Treat item/completed and turn/completed as authoritative terminal evidence.
+# Keep the Windows checkout under one executor until the delegated turn ends.
+# Mark an active turn unknown when transport is lost; never infer success.
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import queue
+import signal
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from pathlib import Path
+from typing import Any
+
+
+CLIENT_INFO = {
+    "name": "windows_vm_control",
+    "title": "Windows VM Control",
+    "version": "1.0.0",
+}
+TERMINAL_TURN_STATES = {"completed", "failed", "interrupted"}
+
+
+class ControllerFailure(Exception):
+    def __init__(self, message: str, exit_code: int = 75) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+
+
+def compact_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+class StateStore:
+    def __init__(self, path: Path, ssh_host: str, cwd: str, start_new: bool) -> None:
+        self.path = path
+        self.lock = threading.RLock()
+        self.data: dict[str, Any] = {
+            "version": 1,
+            "sshHost": ssh_host,
+            "cwd": cwd,
+            "threadId": None,
+            "threadStatus": "notLoaded",
+            "activeTurnId": None,
+            "lastTurnId": None,
+            "turnStatus": "idle",
+            "lastItem": None,
+            "pendingRequests": [],
+            "connectionStatus": "starting",
+        }
+        if path.exists() and not start_new:
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise ControllerFailure(f"state file is unreadable: {error}", 65) from error
+            if loaded.get("version") != 1:
+                raise ControllerFailure("state file has an unsupported version", 65)
+            if loaded.get("sshHost") != ssh_host or loaded.get("cwd") != cwd:
+                raise ControllerFailure("state file belongs to another SSH host or working directory", 65)
+            self.data.update(loaded)
+        self.persist()
+
+    def update(self, **changes: Any) -> None:
+        with self.lock:
+            self.data.update(changes)
+            self._persist_locked()
+
+    def snapshot(self) -> dict[str, Any]:
+        with self.lock:
+            return dict(self.data)
+
+    def update_if_active(self, **changes: Any) -> bool:
+        with self.lock:
+            if not self.data.get("activeTurnId"):
+                return False
+            self.data.update(changes)
+            self._persist_locked()
+            return True
+
+    def _persist_locked(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary_name = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(compact_json(self.data) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_name, self.path)
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(temporary_name)
+            except OSError:
+                pass
+            raise
+
+    def persist(self) -> None:
+        with self.lock:
+            self._persist_locked()
+
+
+class WindowsCodexController:
+    def __init__(self, args: argparse.Namespace) -> None:
+        self.args = args
+        self.state = StateStore(Path(args.state), args.ssh, args.cwd, args.new)
+        self.process: subprocess.Popen[str] | None = None
+        self.output_lock = threading.Lock()
+        self.send_lock = threading.Lock()
+        self.response_lock = threading.Lock()
+        self.pending_lock = threading.RLock()
+        self.response_waiters: dict[int, queue.Queue[dict[str, Any]]] = {}
+        self.pending_server_requests: dict[str, tuple[Any, str]] = {}
+        self.next_request_id = 1
+        self.transport_lost = threading.Event()
+        self.turn_starting = threading.Event()
+        self.shutdown_requested = threading.Event()
+        self.closing = threading.Event()
+        self.command_queue: queue.Queue[str | None] = queue.Queue()
+        self.session_turn_status: str | None = None
+
+    def emit_controller(self, name: str, **params: Any) -> None:
+        message = {"method": f"controller/{name}", "params": params}
+        with self.output_lock:
+            sys.stdout.write(compact_json(message) + "\n")
+            sys.stdout.flush()
+
+    def emit_raw(self, line: str) -> None:
+        with self.output_lock:
+            sys.stdout.write(line + "\n")
+            sys.stdout.flush()
+
+    def check_readiness(self) -> str:
+        status_script = Path(__file__).with_name("windows-vm-status")
+        if not status_script.is_file() or not os.access(status_script, os.X_OK):
+            raise ControllerFailure(f"readiness helper is not executable: {status_script}", 69)
+        result = subprocess.run(
+            [str(status_script), "--ssh", self.args.ssh, "--require", "codex", "--wait", "0"],
+            stdin=subprocess.DEVNULL,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        values: dict[str, str] = {}
+        for line in result.stdout.splitlines():
+            key, separator, value = line.partition("=")
+            if separator:
+                values[key] = value
+        if result.returncode != 0:
+            detail = values.get("codex", values.get("ssh", "failed"))
+            raise ControllerFailure(f"Windows Codex readiness failed: {detail}", 70)
+        codex_path = values.get("codex_path", "")
+        if not codex_path or codex_path in {"not_found", "not_checked"}:
+            raise ControllerFailure("Windows Codex readiness returned no executable", 70)
+        self.emit_controller("readiness", codexVersion=values.get("codex_version", "unknown"))
+        return codex_path
+
+    @staticmethod
+    def powershell_quote(value: str) -> str:
+        return "'" + value.replace("'", "''") + "'"
+
+    def open_transport(self, codex_path: str) -> None:
+        remote_command = (
+            "powershell.exe -NoLogo -NoProfile -NonInteractive -Command "
+            + '"& '
+            + self.powershell_quote(codex_path)
+            + ' app-server --stdio"'
+        )
+        try:
+            self.process = subprocess.Popen(
+                [
+                    "ssh",
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "ServerAliveInterval=30",
+                    "-o",
+                    "ServerAliveCountMax=3",
+                    self.args.ssh,
+                    remote_command,
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                bufsize=1,
+            )
+        except OSError as error:
+            raise ControllerFailure(f"could not start SSH app-server transport: {error}", 71) from error
+        threading.Thread(target=self._read_server, name="app-server-reader", daemon=True).start()
+        threading.Thread(target=self._read_stderr, name="app-server-stderr", daemon=True).start()
+
+    def send(self, message: dict[str, Any]) -> None:
+        if self.process is None or self.process.stdin is None or self.process.poll() is not None:
+            raise ControllerFailure("app-server transport is not connected", 76)
+        try:
+            with self.send_lock:
+                self.process.stdin.write(compact_json(message) + "\n")
+                self.process.stdin.flush()
+        except (BrokenPipeError, OSError) as error:
+            self._mark_transport_lost("write failed")
+            raise ControllerFailure("app-server transport was lost", 76) from error
+
+    def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        with self.response_lock:
+            request_id = self.next_request_id
+            self.next_request_id += 1
+            waiter: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
+            self.response_waiters[request_id] = waiter
+        self.send({"method": method, "id": request_id, "params": params})
+        deadline = time.monotonic() + self.args.rpc_timeout
+        while True:
+            if self.shutdown_requested.is_set():
+                with self.response_lock:
+                    self.response_waiters.pop(request_id, None)
+                raise ControllerFailure("controller interrupted", 130)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                with self.response_lock:
+                    self.response_waiters.pop(request_id, None)
+                raise ControllerFailure(
+                    f"app-server did not answer {method} within {self.args.rpc_timeout}s",
+                    124,
+                )
+            try:
+                response = waiter.get(timeout=min(0.2, remaining))
+                break
+            except queue.Empty:
+                continue
+        if self.transport_lost.is_set():
+            raise ControllerFailure("app-server transport was lost", 76)
+        if "error" in response:
+            error = response.get("error") or {}
+            raise ControllerFailure(f"{method} failed: {error.get('message', 'unknown error')}")
+        result = response.get("result")
+        return result if isinstance(result, dict) else {}
+
+    def notify(self, method: str, params: dict[str, Any]) -> None:
+        self.send({"method": method, "params": params})
+
+    def initialize(self) -> None:
+        self.request("initialize", {"clientInfo": CLIENT_INFO})
+        self.notify("initialized", {})
+        snapshot = self.state.snapshot()
+        resumed = bool(snapshot.get("threadId"))
+        with self.pending_lock:
+            self.pending_server_requests.clear()
+        self.state.update(pendingRequests=[])
+        if resumed:
+            result = self.request(
+                "thread/resume",
+                {"threadId": snapshot["threadId"], "cwd": self.args.cwd},
+            )
+        else:
+            result = self.request("thread/start", {"cwd": self.args.cwd})
+        thread = result.get("thread")
+        if not isinstance(thread, dict) or not thread.get("id"):
+            raise ControllerFailure("app-server returned no thread identity")
+        self.reconcile_thread(thread)
+        self.state.update(connectionStatus="connected")
+        self.emit_controller(
+            "ready",
+            resumed=resumed,
+            stateFile=str(self.state.path),
+            threadId=thread["id"],
+        )
+
+    def reconcile_thread(self, thread: dict[str, Any]) -> None:
+        snapshot = self.state.snapshot()
+        active_turn_id = snapshot.get("activeTurnId")
+        last_turn_id = snapshot.get("lastTurnId")
+        turn_status = snapshot.get("turnStatus", "idle")
+        turns = thread.get("turns")
+        if isinstance(turns, list) and turns:
+            last_turn = turns[-1]
+            if isinstance(last_turn, dict):
+                last_status = last_turn.get("status")
+                if last_status == "inProgress":
+                    active_turn_id = last_turn.get("id")
+                    turn_status = "inProgress"
+                elif last_status in TERMINAL_TURN_STATES:
+                    active_turn_id = None
+                    turn_status = last_status
+                    last_turn_id = last_turn.get("id")
+        self.state.update(
+            threadId=thread["id"],
+            threadStatus=thread.get("status", "loaded"),
+            activeTurnId=active_turn_id,
+            lastTurnId=last_turn_id,
+            turnStatus=turn_status,
+        )
+
+    def start_turn(self, text: str) -> None:
+        if not text.strip():
+            raise ControllerFailure("turn text is empty", 64)
+        snapshot = self.state.snapshot()
+        if snapshot.get("activeTurnId"):
+            raise ControllerFailure("a turn is already active")
+        self.turn_starting.set()
+        try:
+            result = self.request(
+                "turn/start",
+                {
+                    "threadId": snapshot["threadId"],
+                    "input": [{"type": "text", "text": text}],
+                },
+            )
+        finally:
+            self.turn_starting.clear()
+        turn = result.get("turn")
+        if not isinstance(turn, dict) or not turn.get("id"):
+            raise ControllerFailure("app-server returned no turn identity")
+        if turn.get("status") in TERMINAL_TURN_STATES:
+            self.session_turn_status = turn["status"]
+        snapshot = self.state.snapshot()
+        if snapshot.get("activeTurnId") != turn["id"] and snapshot.get("lastTurnId") != turn["id"]:
+            self.state.update(activeTurnId=turn["id"], turnStatus=turn.get("status", "inProgress"))
+        self.emit_controller("actionAccepted", action="start", turnId=turn["id"])
+
+    def steer(self, text: str) -> None:
+        snapshot = self.state.snapshot()
+        turn_id = snapshot.get("activeTurnId")
+        if not turn_id:
+            raise ControllerFailure("no active turn can be steered")
+        if not text.strip():
+            raise ControllerFailure("steer text is empty", 64)
+        self.request(
+            "turn/steer",
+            {
+                "threadId": snapshot["threadId"],
+                "expectedTurnId": turn_id,
+                "input": [{"type": "text", "text": text}],
+            },
+        )
+        self.emit_controller("actionAccepted", action="steer", turnId=turn_id)
+
+    def interrupt(self) -> None:
+        snapshot = self.state.snapshot()
+        turn_id = snapshot.get("activeTurnId")
+        if not turn_id:
+            raise ControllerFailure("no active turn can be interrupted")
+        self.request("turn/interrupt", {"threadId": snapshot["threadId"], "turnId": turn_id})
+        self.emit_controller("actionAccepted", action="interrupt", turnId=turn_id)
+
+    @staticmethod
+    def request_key(request_id: Any) -> str:
+        return compact_json(request_id)
+
+    def respond(self, request_id: Any, response_kind: str, payload: dict[str, Any]) -> None:
+        key = self.request_key(request_id)
+        with self.pending_lock:
+            pending = self.pending_server_requests.get(key)
+        if pending is None:
+            raise ControllerFailure("requestId is not pending")
+        original_id, method = pending
+        self.send({"id": original_id, response_kind: payload})
+        with self.pending_lock:
+            self.pending_server_requests.pop(key, None)
+        self._persist_pending_requests()
+        with self.pending_lock:
+            no_pending_requests = not self.pending_server_requests
+        if no_pending_requests:
+            self.state.update_if_active(turnStatus="inProgress")
+        self.emit_controller(
+            "actionAccepted",
+            action="respond",
+            requestId=original_id,
+            requestMethod=method,
+            responseKind=response_kind,
+        )
+
+    def _persist_pending_requests(self) -> None:
+        with self.pending_lock:
+            requests = [
+                {"requestId": original_id, "method": method}
+                for original_id, method in self.pending_server_requests.values()
+            ]
+        self.state.update(pendingRequests=requests)
+
+    def _read_server(self) -> None:
+        assert self.process is not None and self.process.stdout is not None
+        try:
+            for raw_line in self.process.stdout:
+                line = raw_line.rstrip("\r\n")
+                if not line:
+                    continue
+                self.emit_raw(line)
+                try:
+                    message = json.loads(line)
+                except json.JSONDecodeError:
+                    self.emit_controller("protocolError", message="app-server emitted invalid JSON")
+                    self._mark_transport_lost("invalid JSON")
+                    return
+                if not isinstance(message, dict):
+                    self.emit_controller("protocolError", message="app-server emitted a non-object")
+                    self._mark_transport_lost("invalid message")
+                    return
+                self._handle_server_message(message)
+        finally:
+            if not self.closing.is_set():
+                self._mark_transport_lost("stream ended")
+
+    def _read_stderr(self) -> None:
+        assert self.process is not None and self.process.stderr is not None
+        for line in self.process.stderr:
+            sys.stderr.write(line)
+            sys.stderr.flush()
+
+    def _handle_server_message(self, message: dict[str, Any]) -> None:
+        if "id" in message and "method" not in message:
+            request_id = message.get("id")
+            if isinstance(request_id, int):
+                with self.response_lock:
+                    waiter = self.response_waiters.pop(request_id, None)
+                if waiter is not None:
+                    waiter.put(message)
+            return
+        method = message.get("method")
+        params = message.get("params") if isinstance(message.get("params"), dict) else {}
+        if not isinstance(method, str):
+            return
+        if "id" in message:
+            request_id = message["id"]
+            with self.pending_lock:
+                self.pending_server_requests[self.request_key(request_id)] = (request_id, method)
+            self._persist_pending_requests()
+            if "requestApproval" in method:
+                waiting = "waitingForApproval"
+            elif "requestUserInput" in method:
+                waiting = "waitingForInput"
+            else:
+                waiting = "waitingForResponse"
+            self.state.update(turnStatus=waiting)
+            self.emit_controller("attentionRequired", requestId=request_id, requestMethod=method)
+            return
+        if method == "thread/started":
+            thread = params.get("thread")
+            if isinstance(thread, dict) and thread.get("id"):
+                self.state.update(threadId=thread["id"])
+        elif method == "thread/status/changed":
+            self.state.update(threadStatus=params.get("status", "unknown"))
+        elif method == "turn/started":
+            turn = params.get("turn")
+            if isinstance(turn, dict) and turn.get("id"):
+                self.state.update(activeTurnId=turn["id"], turnStatus=turn.get("status", "inProgress"))
+        elif method == "item/completed":
+            item = params.get("item")
+            if isinstance(item, dict):
+                self.state.update(
+                    lastItem={
+                        "id": item.get("id"),
+                        "type": item.get("type"),
+                        "status": item.get("status", "completed"),
+                    }
+                )
+        elif method == "turn/completed":
+            turn = params.get("turn")
+            if isinstance(turn, dict):
+                self.session_turn_status = turn.get("status", "unknown")
+                self.state.update(
+                    activeTurnId=None,
+                    lastTurnId=turn.get("id"),
+                    turnStatus=turn.get("status", "unknown"),
+                    pendingRequests=[],
+                )
+                with self.pending_lock:
+                    self.pending_server_requests.clear()
+        elif method == "serverRequest/resolved":
+            request_id = params.get("requestId")
+            if request_id is not None:
+                with self.pending_lock:
+                    self.pending_server_requests.pop(self.request_key(request_id), None)
+                self._persist_pending_requests()
+                with self.pending_lock:
+                    no_pending_requests = not self.pending_server_requests
+                if no_pending_requests:
+                    self.state.update_if_active(turnStatus="inProgress")
+        elif method == "error":
+            self.state.update(turnStatus="retrying" if params.get("willRetry") else "error")
+
+    def _mark_transport_lost(self, reason: str) -> None:
+        if self.transport_lost.is_set() or self.closing.is_set():
+            return
+        snapshot = self.state.snapshot()
+        changes: dict[str, Any] = {"connectionStatus": "lost"}
+        if snapshot.get("activeTurnId") or self.turn_starting.is_set():
+            changes["turnStatus"] = "unknown"
+        self.state.update(**changes)
+        self.transport_lost.set()
+        with self.response_lock:
+            waiters = list(self.response_waiters.values())
+            self.response_waiters.clear()
+        for waiter in waiters:
+            try:
+                waiter.put_nowait({"error": {"message": "transport lost"}})
+            except queue.Full:
+                pass
+        self.emit_controller(
+            "transportLost",
+            reason=reason,
+            threadId=snapshot.get("threadId"),
+            turnId=snapshot.get("activeTurnId"),
+        )
+
+    def _read_commands(self) -> None:
+        for line in sys.stdin:
+            self.command_queue.put(line)
+        self.command_queue.put(None)
+
+    def handle_action(self, line: str) -> bool:
+        try:
+            command = json.loads(line)
+        except json.JSONDecodeError:
+            self.emit_controller("actionRejected", message="controller input must be one JSON object per line")
+            return False
+        if not isinstance(command, dict):
+            self.emit_controller("actionRejected", message="controller input must be a JSON object")
+            return False
+        action = command.get("action")
+        try:
+            if action == "start":
+                self.start_turn(str(command.get("text", "")))
+            elif action == "steer":
+                self.steer(str(command.get("text", "")))
+            elif action == "interrupt":
+                self.interrupt()
+            elif action == "respond":
+                result = command.get("result")
+                error = command.get("error")
+                has_result = isinstance(result, dict)
+                has_error = isinstance(error, dict)
+                if "requestId" not in command or has_result == has_error:
+                    raise ControllerFailure(
+                        "respond requires requestId and exactly one object result or error",
+                        64,
+                    )
+                self.respond(
+                    command["requestId"],
+                    "result" if has_result else "error",
+                    result if has_result else error,
+                )
+            elif action == "status":
+                self.emit_controller("status", **self.state.snapshot())
+            elif action == "close":
+                if self.state.snapshot().get("activeTurnId"):
+                    raise ControllerFailure("interrupt the active turn before closing")
+                return True
+            else:
+                raise ControllerFailure("unknown controller action", 64)
+        except ControllerFailure as error:
+            self.emit_controller("actionRejected", action=action, message=str(error))
+        return False
+
+    def run(self) -> int:
+        codex_path = self.check_readiness()
+        self.open_transport(codex_path)
+        self.initialize()
+        if self.args.handoff:
+            handoff = Path(self.args.handoff).read_text(encoding="utf-8")
+            self.start_turn(handoff)
+        threading.Thread(target=self._read_commands, name="controller-input", daemon=True).start()
+        input_closed = False
+        explicit_close = False
+        while True:
+            if self.shutdown_requested.is_set():
+                self._mark_transport_lost("controller interrupted")
+                self.stop_process()
+                return 130
+            if self.transport_lost.is_set():
+                self.stop_process()
+                return 76
+            try:
+                line = self.command_queue.get(timeout=0.2)
+            except queue.Empty:
+                line = ""
+            if line is None:
+                input_closed = True
+            elif line and self.handle_action(line):
+                explicit_close = True
+            if explicit_close:
+                break
+            if input_closed and not self.state.snapshot().get("activeTurnId"):
+                break
+            if self.process is not None and self.process.poll() is not None and not self.closing.is_set():
+                self._mark_transport_lost(f"SSH exited {self.process.returncode}")
+        status = self.session_turn_status
+        self.close_transport()
+        if status == "failed":
+            return 75
+        if status == "interrupted":
+            return 130
+        if status == "unknown":
+            return 76
+        return 0
+
+    def close_transport(self) -> None:
+        self.closing.set()
+        snapshot = self.state.snapshot()
+        if self.process is not None and self.process.poll() is None and snapshot.get("threadId"):
+            try:
+                self.request("thread/unsubscribe", {"threadId": snapshot["threadId"]})
+            except ControllerFailure as error:
+                self.emit_controller("warning", message=str(error))
+        self.stop_process()
+        self.state.update(connectionStatus="closed")
+        self.emit_controller("closed", threadId=snapshot.get("threadId"), turnStatus=snapshot.get("turnStatus"))
+
+    def stop_process(self) -> None:
+        if self.process is None:
+            return
+        if self.process.stdin is not None:
+            try:
+                self.process.stdin.close()
+            except OSError:
+                pass
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=2)
+
+
+def configured_ssh_alias() -> str:
+    environment_alias = os.environ.get("WINDOWS_VM_SSH_ALIAS")
+    if environment_alias:
+        return environment_alias
+    config_root = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+    config_path = Path(
+        os.environ.get(
+            "WINDOWS_VM_CONTROL_CONFIG",
+            str(config_root / "windows-vm-control" / "config.json"),
+        )
+    ).expanduser()
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "windows-vm"
+    configured_alias = config.get("ssh_alias") if isinstance(config, dict) else None
+    return configured_alias if isinstance(configured_alias, str) and configured_alias else "windows-vm"
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Maintain one resumable Windows Codex app-server session over SSH."
+    )
+    parser.add_argument("--cwd", required=True, help="absolute Windows working directory")
+    parser.add_argument("--state", required=True, help="absolute host path for controller state")
+    parser.add_argument("--ssh", default=configured_ssh_alias())
+    parser.add_argument("--handoff", help="UTF-8 file used to start the first turn")
+    parser.add_argument("--new", action="store_true", help="start a new thread and replace controller state")
+    parser.add_argument("--rpc-timeout", type=int, default=30)
+    args = parser.parse_args()
+    if "\n" in args.cwd or "\r" in args.cwd or not args.cwd:
+        parser.error("--cwd must be a non-empty single-line value")
+    state_path = Path(args.state).expanduser()
+    if not state_path.is_absolute():
+        parser.error("--state must be an absolute host path")
+    args.state = str(state_path)
+    if args.rpc_timeout <= 0:
+        parser.error("--rpc-timeout must be positive")
+    if args.handoff:
+        handoff = Path(args.handoff)
+        if not handoff.is_file():
+            parser.error("--handoff must name a readable file")
+    return args
+
+
+def main() -> int:
+    args = parse_args()
+    controller = WindowsCodexController(args)
+
+    def handle_signal(_signum: int, _frame: Any) -> None:
+        controller.shutdown_requested.set()
+
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+    try:
+        return controller.run()
+    except ControllerFailure as error:
+        exit_code = error.exit_code
+        if controller.shutdown_requested.is_set() or exit_code == 130:
+            controller._mark_transport_lost("controller interrupted")
+            exit_code = 130
+        elif controller.transport_lost.is_set():
+            exit_code = 76
+        controller.emit_controller("fatal", message=str(error))
+        if controller.process is not None:
+            if controller.transport_lost.is_set():
+                controller.stop_process()
+            else:
+                controller.close_transport()
+        return exit_code
+    except OSError as error:
+        controller.emit_controller("fatal", message=str(error))
+        if controller.process is not None:
+            if controller.transport_lost.is_set():
+                controller.stop_process()
+            else:
+                controller.close_transport()
+        return 73
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -24,7 +24,7 @@ The helper uses the system Windows PowerShell and preserves stdin, stdout, stder
 
 Set `$ErrorActionPreference = 'Stop'` when any PowerShell error must fail the task. Use UTF-8 with a byte-order mark for non-ASCII Windows PowerShell 5 scripts.
 
-## One Windows Codex run
+## Bounded Windows Codex run
 
 Use this when each next step can depend on earlier output:
 
@@ -52,7 +52,7 @@ For another nonzero exit, read stderr. It names whether VM readiness, Codex sett
 
 Check the Windows Codex report with the method that can show completion. Stop if it requests credentials, asks the user to confirm identity, would delete, reset, or overwrite persistent data, names another VM, account, or checkout, or conflicts with another process modifying the same checkout.
 
-This skill cannot steer a Windows Codex run after launch. Use a new run for a self-contained follow-up.
+Use [managed delegation](managed-delegation.md) when the same Windows Codex assignment must accept follow-up instructions, approvals, user input, or interruption while it runs.
 
 ## SSH process environment
 
