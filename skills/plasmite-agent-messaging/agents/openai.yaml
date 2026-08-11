@@ -1,0 +1,4 @@
+interface:
+  display_name: "Plasmite Agent Messaging"
+  short_description: "Exchange lightweight messages between Codex agents"
+  default_prompt: "Use $plasmite-agent-messaging to send, read, or wait for messages from another Codex agent."
