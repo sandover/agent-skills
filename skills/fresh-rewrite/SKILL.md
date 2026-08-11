@@ -5,14 +5,11 @@ description: Rewrite a substantial section or complete document based on a fresh
 
 # Fresh Rewrite
 
-1. Move the source section or document to a temporary file. For a section, leave a placeholder.
-2. Without consulting the original, create a fresh outline in a second temporary file. Do not write complete sentences, use short bullets to capture important concepts and structure.
-3. Draft the replacement from the outline. Do not patch or paraphrase the original.
-4. Review the original and import any material worth keeping. Fit them to the new structure and language.
-5. After saving the replacement, delete the temporary files.
+1. Set the original aside.
+2. In a scratchpad, write a fresh bullet outline, then draft from it without consulting the original.
+3. Review the original only after the new draft exists. Bring over anything worth keeping, adapted to the new structure and language.
+4. Replace the original with the new version and discard the scratchpad.
 
-## Style
 
-Prefer concrete, ordinary, declarative language. Use jargon only when it is more accurate than laymans terms.
 
-For technical material, write in a style that is one quarter of the way toward Simplified Technical English: use somewhat shorter sentences, consistent terms, explicit subjects and references, and fewer nested clauses. 
+Use concrete, ordinary, declarative language. Use jargon terms only when ordinary terms are not accurate enough. For technical material, lean one quarter toward Simplified Technical English: shorter sentences, consistent terms, define unusual terms on first use, explicit references, and limited nesting.
