@@ -37,6 +37,8 @@ Each method reaches different Windows components and can confirm different facts
 
 VM disks, files, the SSH host key, settings, and configuration survive restarts. Power, Tools, addresses, routes, process environments, whether a Windows user is signed in, input focus, and running processes can change. A running process does not receive later environment changes. A status field may be `unknown` because the requested readiness check did not require that capability.
 
+Use these method boundaries as guardrails, not as a required sequence. Do not treat one method's evidence as proof of another capability or repeat checks that cannot answer the current question. For speed, start from the outcome and choose the shortest path that can prove it. After relevant state changes, recheck only the facts the task depends on, surface user-controlled handoffs early, and keep independent work moving.
+
 ## What the agent may do
 
 | Action | Rule |
