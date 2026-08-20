@@ -5,7 +5,7 @@ description: Control and automate a VMware Fusion Windows VM from Codex running 
 
 # Windows VM Control
 
-Treat Windows as a separate, persistent computer. Invoking this skill authorizes a background launch of Fusion and the configured VM.
+Treat Windows as a separate, persistent computer. Invoking this skill authorizes background use of Fusion and the configured VM. Choose resume or start from the actual VM state; availability alone does not decide which action is correct.
 
 Run the bundled commands from this skill directory, or use absolute paths. Fusion, Keychain, and the private VM network require host access.
 
@@ -35,15 +35,17 @@ Each method reaches different Windows components and can confirm different facts
 | Bounded Windows Codex | One self-contained task where later steps depend on earlier output | The turn's event stream and report | Independent confirmation of completion |
 | Managed Windows Codex | A delegated assignment that needs follow-up, steering, interruption, or answered requests | Correlated thread, turn, item, and request events | Signed-in desktop state or independent confirmation |
 
-VM disks, files, the SSH host key, settings, and configuration survive restarts. Power, Tools, addresses, routes, process environments, whether a Windows user is signed in, input focus, and running processes can change. A running process does not receive later environment changes. A status field may be `unknown` because the requested readiness check did not require that capability.
+VM disks, files, the SSH host key, settings, and configuration survive restarts. A VM may be running, paused or suspended, or powered off. Power, Tools, addresses, routes, process environments, whether a Windows user is signed in, input focus, and running processes can change. A running process does not receive later environment changes. A status field may be `unknown` because the requested readiness check did not require that capability.
 
-Use these method boundaries as guardrails, not as a required sequence. Do not treat one method's evidence as proof of another capability or repeat checks that cannot answer the current question. For speed, start from the outcome and choose the shortest path that can prove it. After relevant state changes, recheck only the facts the task depends on, surface user-controlled handoffs early, and keep independent work moving.
+Use these method boundaries as guardrails, not as a required sequence. Do not treat one method's evidence as proof of another capability or power state, or repeat checks that cannot answer the current question. In particular, absence from `vmrun list` means only that the VM is not currently running; it does not distinguish pause, suspend, and power-off. Preserve a user-reported pause or suspend as authoritative until contrary evidence appears. For speed, start from the outcome and choose the shortest path that can prove it. After relevant state changes, recheck only the facts the task depends on, surface user-controlled handoffs early, and keep independent work moving.
 
 ## What the agent may do
 
 | Action | Rule |
 | --- | --- |
-| Launch Fusion in the background; start the configured VM | Proceed |
+| Launch Fusion in the background | Proceed |
+| Resume the configured VM when it is known to be paused or suspended | Proceed unless the user says they will do it |
+| Start the configured VM when it is known to be powered off | Proceed |
 | Run read-only checks; use SSH, background capture, or Guest Operations | Proceed for the VM, files, and actions named in the request |
 | Bring an app forward; change Mac focus; move or capture the Mac pointer | Ask first |
 | Enter a password, passkey, multifactor response, or approve a prompt that confirms the user's identity or grants account access | Stop for the user |
@@ -55,7 +57,7 @@ Do not let two agents or processes modify the same checkout or process tree at t
 
 1. Name the check that would show the requested work is complete.
 2. Choose the method that can run that check.
-3. Check that method. If it fails, find the first component that did not respond as expected:
+3. Check that method. If it fails, find the first component that did not respond as expected. Do not convert a capability failure into a more specific VM power-state claim or restart a VM that may be paused or suspended:
 
    ```text
    Tools:   Fusion -> VM -> Tools -> Guest Operations

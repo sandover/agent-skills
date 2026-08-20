@@ -186,7 +186,9 @@ probe_once() {
   if (( need_vm )); then
     : > "$error_file"
     if running=$(run_vmrun list 2>"$error_file"); then
-      vm_power=stopped
+      # vmrun list reports only currently running VMs. Its absence signal does
+      # not distinguish a paused or suspended VM from a powered-off VM.
+      vm_power=not_running
       for candidate in "${(@f)running}"; do
         [[ -f "$candidate" ]] || continue
         if [[ "$candidate" -ef "$vmx" ]]; then

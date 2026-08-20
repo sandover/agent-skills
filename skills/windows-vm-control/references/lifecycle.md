@@ -25,9 +25,9 @@ Store the Windows password used by Guest Operations in the named macOS Keychain 
 
 Use `doctor --require guest-ops` before Guest Operations. Add `--require vm-unlock` only when VMware needs a password to open an encrypted VM. A Keychain failure can mean that the item is absent or that the current process cannot access it.
 
-## Start the configured VM
+## Make the configured VM available
 
-Use this recipe when Fusion or the VM may be stopped. It does not authorize starting another VM or bringing Fusion to the front.
+Use judgment here. The configured VM may be running, paused or suspended, or powered off. `vmrun list` reports currently running VMs; absence from that list does not distinguish the other states. A user statement that the VM is paused or suspended is stronger evidence than an empty running list.
 
 Check the configured VM:
 
@@ -35,21 +35,23 @@ Check the configured VM:
 scripts/windows-vmrun doctor
 ```
 
-Launch Fusion without changing Mac focus and inspect running VMs:
+Launch Fusion without changing Mac focus and inspect running VMs when that check can answer the current question:
 
 ```bash
 open -g -a 'VMware Fusion'
 scripts/windows-vmrun list
 ```
 
-If the configured VM is absent, start it without opening its window and wait for SSH:
+If the VM is known to be paused or suspended, resume it rather than starting it. Use the user-reported state, Fusion state, or another check that actually distinguishes the states. If the user says they are resuming it, wait. Then check only the capability the task needs.
+
+Start the VM without opening its window only when it is confirmed powered off, or when the user asked to start an unavailable VM and there is no indication that it was paused or suspended:
 
 ```bash
 scripts/windows-vmrun start nogui
 scripts/windows-vm-status --require ssh --wait 90
 ```
 
-The wait retries temporary startup failures. It stops for invalid configuration or an SSH host-key error. `ssh=ok` shows that the route, SSH host key, Windows account, and test command worked. It does not show Tools or the signed-in Windows desktop. If SSH fails, use [access recovery](access-recovery.md).
+The wait retries temporary startup failures. It stops for invalid configuration or an SSH host-key error. `ssh=ok` shows that the route, SSH host key, Windows account, and test command worked. It does not show Tools or the signed-in Windows desktop. If a previously available VM disappears during readiness, do not start it again automatically; preserve the possibility of pause or suspend and surface the handoff. If SSH fails while the VM remains known running, use [access recovery](access-recovery.md).
 
 ## After restart or resume
 

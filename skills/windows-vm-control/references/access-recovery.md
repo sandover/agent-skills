@@ -35,7 +35,7 @@ The script prints `key=value` status lines and makes no changes. Stop if `comput
 
 | Key | Possible values |
 | --- | --- |
-| `vm_power` | `running`, `stopped`, `unknown` |
+| `vm_power` | `running`, `not_running`, `unknown`; `not_running` does not distinguish paused, suspended, and powered off |
 | `tools` | `running`, `unavailable`, `unknown` |
 | `route_match` | `yes`, `no`, `unknown`; DNS can produce `unknown` |
 | `ssh` | `ok`, `timeout`, `refused`, `alias_unresolved`, `host_key_failed`, `authentication_failed`, `probe_failed`, `failed` |
