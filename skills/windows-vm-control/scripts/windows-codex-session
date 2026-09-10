@@ -148,7 +148,15 @@ class WindowsCodexController:
         if not status_script.is_file() or not os.access(status_script, os.X_OK):
             raise ControllerFailure(f"readiness helper is not executable: {status_script}", 69)
         result = subprocess.run(
-            [str(status_script), "--ssh", self.args.ssh, "--require", "codex", "--wait", "0"],
+            [
+                str(status_script),
+                "--ssh",
+                self.args.ssh,
+                "--require",
+                "codex",
+                "--wait",
+                str(self.args.readiness_wait),
+            ],
             stdin=subprocess.DEVNULL,
             text=True,
             stdout=subprocess.PIPE,
@@ -162,10 +170,10 @@ class WindowsCodexController:
                 values[key] = value
         if result.returncode != 0:
             detail = values.get("codex", values.get("ssh", "failed"))
-            raise ControllerFailure(f"Windows Codex readiness failed: {detail}", 70)
+            raise ControllerFailure(f"Windows Codex is not ready: {detail}", 70)
         codex_path = values.get("codex_path", "")
         if not codex_path or codex_path in {"not_found", "not_checked"}:
-            raise ControllerFailure("Windows Codex readiness returned no executable", 70)
+            raise ControllerFailure("Windows Codex is not ready: no executable", 70)
         self.emit_controller("readiness", codexVersion=values.get("codex_version", "unknown"))
         return codex_path
 
@@ -666,6 +674,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ssh", default=configured_ssh_alias())
     parser.add_argument("--handoff", help="UTF-8 file used to start the first turn")
     parser.add_argument("--new", action="store_true", help="start a new thread and replace controller state")
+    parser.add_argument(
+        "--readiness-wait",
+        type=int,
+        default=60,
+        help="seconds to wait for Windows Codex readiness before returning not ready",
+    )
     parser.add_argument("--rpc-timeout", type=int, default=30)
     args = parser.parse_args()
     if "\n" in args.cwd or "\r" in args.cwd or not args.cwd:
@@ -676,6 +690,8 @@ def parse_args() -> argparse.Namespace:
     args.state = str(state_path)
     if args.rpc_timeout <= 0:
         parser.error("--rpc-timeout must be positive")
+    if args.readiness_wait < 0:
+        parser.error("--readiness-wait must be non-negative")
     if args.handoff:
         handoff = Path(args.handoff)
         if not handoff.is_file():
