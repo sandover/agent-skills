@@ -1,8 +1,55 @@
 # VM lifecycle
 
-## Configure the VM
+Check the capability needed by the task. Do not make every access method healthy before doing useful work.
 
-`windows-vmrun` reads the configuration for one VM from `~/.config/windows-vm-control/config.json`:
+```bash
+scripts/windows-vm-status --require ssh
+scripts/windows-vm-status --require codex
+scripts/windows-vm-status --require vm,tools
+```
+
+A successful task command can replace a separate readiness probe. Use the combined `scripts/windows-vm-status` only when comparing methods helps diagnose a failure.
+
+## Start or resume
+
+The configured VM is the target. A running-list entry is useful positive evidence; absence does not distinguish paused, suspended, and powered-off states. Preserve a user report of pause or suspend until better evidence changes it. `doctor` checks configuration, not power state.
+
+Launch Fusion in the background if needed:
+
+```bash
+open -g -a 'VMware Fusion'
+scripts/windows-vmrun list
+```
+
+| Known state | Action when making the VM available is authorized |
+| --- | --- |
+| Running | Probe the needed capability; do not start again. |
+| Paused | `scripts/windows-vmrun unpause` |
+| Suspended | Resume the saved VM state. Fusion's **Virtual Machine → Resume** is the user-assisted route; `vmrun start` resumes a suspended VM. |
+| Powered off | `scripts/windows-vmrun start nogui` |
+| Unclear | Inspect Fusion's state or ask the user if a quick answer resolves it. Do not infer a cold boot from failed SSH. |
+| User is resuming it | Wait for the handoff, then probe the required capability. |
+
+For the command-line suspended-state route, use `scripts/windows-vmrun start nogui`. Despite the command's name, suspend recovery uses `start`; pause recovery uses `unpause`. Never discard saved state, remove lock files, or reset the VM to make this work. These distinctions follow VMware's [vmrun reference](https://www.manuallib.com/download/pdf1/VMWARE-USING-VMRUN-TO-CONTROL-VIRTUAL-MACHINES-VMWARE-WORKSTATION-7.0-VMWARE-FUSION-3.0-VMWARE-VSPHERE-4-VMWARE-SERVER-2.0.PDF) and [Fusion power options](https://knowledge.broadcom.com/external/article?legacyId=1018242).
+
+After start/resume, allow a bounded warm-up:
+
+```bash
+scripts/windows-vm-status --require ssh --wait 30
+```
+
+Use `--require codex` if that is the next task. The delegation runners already wait for it. A timeout means this capability did not become ready within the allowance.
+
+- If Windows is visibly booting/resuming or readiness is improving, allow another bounded wait that fits the task.
+- If the VM is running with no progress, inspect the failed access method using [access recovery](access-recovery.md).
+- If another trustworthy method can finish the task, use it.
+- If the VM disappears or the user pauses it, stop attempts that could restart it and reconcile the state.
+
+Do not reboot a running VM because SSH, Tools, or Codex is slow. After a cold restart, rediscover process IDs and sessions. After resume, verify live process/session identity before using cached handles. Recheck an address only when routing or connectivity makes it doubtful; persistent files and configuration survive both.
+
+## Configuration and credentials
+
+The wrapper reads `~/.config/windows-vm-control/config.json`; `WINDOWS_VM_CONTROL_CONFIG` selects another file. Inspect the existing configuration before creating one. `scripts/windows-vmrun config-path` prints the selected path.
 
 ```json
 {
@@ -17,50 +64,14 @@
 }
 ```
 
-`WINDOWS_VM_CONTROL_CONFIG` selects another file. The VM unlock fields are optional for an unencrypted VM.
-
-Store the Windows password used by Guest Operations in the named macOS Keychain item. SSH does not use this password. VMware file, process, capture, and keystroke commands do.
-
-`vmrun` accepts these passwords only as command arguments. Another process owned by the Mac user may observe them while `vmrun` is running.
-
-Use `doctor --require guest-ops` before Guest Operations. Add `--require vm-unlock` only when VMware needs a password to open an encrypted VM. A Keychain failure can mean that the item is absent or that the current process cannot access it.
-
-## Make the configured VM available
-
-Use judgment here. The configured VM may be running, paused or suspended, or powered off. `vmrun list` reports currently running VMs; absence from that list does not distinguish the other states. A user statement that the VM is paused or suspended is stronger evidence than an empty running list.
-
-Check the configured VM:
+Guest Operations uses the named macOS Keychain password; SSH uses its own configured key. VM unlock fields are optional for an unencrypted VM. Check only the required local setup:
 
 ```bash
 scripts/windows-vmrun doctor
+scripts/windows-vmrun doctor --require guest-ops
+scripts/windows-vmrun doctor --require vm-unlock
 ```
 
-Launch Fusion without changing Mac focus and inspect running VMs when that check can answer the current question:
+A missing/inaccessible Keychain item is an access problem, not proof the password is wrong. Do not print the secret to diagnose it. `vmrun` accepts passwords as arguments, so another process owned by the Mac user may observe them during execution; keep credential handling inside the wrapper.
 
-```bash
-open -g -a 'VMware Fusion'
-scripts/windows-vmrun list
-```
-
-If the VM is known to be paused or suspended, resume it rather than starting it. Use the user-reported state, Fusion state, or another check that actually distinguishes the states. If the user says they are resuming it, wait. Then check only the capability the task needs.
-
-Start the VM without opening its window only when it is confirmed powered off, or when the user asked to start an unavailable VM and there is no indication that it was paused or suspended:
-
-```bash
-scripts/windows-vmrun start nogui
-scripts/windows-vm-status --require ssh --wait 90
-```
-
-The wait retries temporary startup failures. It stops for invalid configuration or an SSH host-key error. `ssh=ok` shows that the route, SSH host key, Windows account, and test command worked. It does not show Tools or the signed-in Windows desktop. If a previously available VM disappears during readiness, do not start it again automatically; preserve the possibility of pause or suspend and surface the handoff. If SSH fails while the VM remains known running, use [access recovery](access-recovery.md).
-
-## After restart or resume
-
-Discard old addresses, SSH sessions, process IDs, and assumptions about earlier Windows Codex runs. Recheck only the method the task needs. A Windows desktop login is not required for SSH or Windows Codex.
-
-Tools and SSH can recover at different times.
-
-Do not repeat a change until a current file, process, or application check shows whether the earlier change completed.
-
-## End the task
-
-Leave the VM running. Ask before suspend or a normal Windows shutdown. Also ask before a hard stop, snapshot change, or Fusion shutdown.
+Leave the VM running when finished unless the user requested another state. Shutdown, suspend, reset, snapshot changes, and Fusion shutdown require authorization for those effects.

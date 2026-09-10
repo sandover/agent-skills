@@ -1,86 +1,44 @@
 ---
 name: windows-vm-control
-description: Control and automate a VMware Fusion Windows VM from Codex running on the Mac host. Use for Windows commands, files, builds, tests, VM lifecycle, native Windows UI, screenshots, Windows login and UAC prompts, and delegation to Codex inside the VM.
+description: Run commands, delegate development, and inspect or operate Windows desktop apps in the configured VMware Fusion VM from a Mac. Includes VM readiness and access recovery.
 ---
 
 # Windows VM Control
 
-Treat Windows as a separate, persistent computer. Invoking this skill authorizes background use of Fusion and the configured VM. Choose resume or start from the actual VM state; availability alone does not decide which action is correct.
+Work on the configured Windows VM as a persistent computer with its own files, processes, accounts, and desktop. Use the user's existing authorization and execution preferences. An ordinary Windows task can include background use and making the configured VM available. Loading this skill alone does not authorize unrelated effects.
 
-Run the bundled commands from this skill directory, or use absolute paths. Fusion, Keychain, and the private VM network require host access.
+Run `scripts/...` from this skill directory, or use absolute paths. Host sandbox restrictions may require host access for Fusion, Keychain, and the private VM network; request that access for the specific operation when needed.
 
-## System model
+## Choose the next action
 
-The Mac can work with the VM through separate methods. One method can work while another fails.
-
-```text
-Mac agent
-  -> Fusion -> configured VM
-       |-> Tools -> Guest Operations
-       |          -> interactive launch -> signed-in Windows desktop -> application
-       |-> virtual network -> SSH route and host key -> Windows account and process
-       |                                                    |-> bounded Windows Codex turn
-       |                                                    `-> managed Windows Codex thread
-       `-> Fusion screen -> captured image
-```
-
-Each method reaches different Windows components and can confirm different facts.
-
-| Method | Reaches | Shows | Does not show |
-| --- | --- | --- | --- |
-| `vmrun` and Tools | VM, Windows files, and Windows processes | Power, Tools, address, and the requested file or process check | SSH or visible windows and dialogs |
-| SSH | One Windows account and its inherited environment | Route, SSH host key, account, command output, and exit status | Signed-in Windows desktop or visible windows |
-| Interactive launch | Signed-in Windows desktop | Output from the launched process | Which Windows control has input focus |
-| Fusion capture | Windows screen shown by Fusion | Current Fusion screen image | An RDP or other Windows desktop |
-| Bounded Windows Codex | One self-contained task where later steps depend on earlier output | The turn's event stream and report | Independent confirmation of completion |
-| Managed Windows Codex | A delegated assignment that needs follow-up, steering, interruption, or answered requests | Correlated thread, turn, item, and request events | Signed-in desktop state or independent confirmation |
-
-VM disks, files, the SSH host key, settings, and configuration survive restarts. A VM may be running, paused or suspended, or powered off. Power, Tools, addresses, routes, process environments, whether a Windows user is signed in, input focus, and running processes can change. A running process does not receive later environment changes. A status field may be `unknown` because the requested readiness check did not require that capability.
-
-Use these method boundaries as guardrails, not as a required sequence. Do not treat one method's evidence as proof of another capability or power state, or repeat checks that cannot answer the current question. In particular, absence from `vmrun list` means only that the VM is not currently running; it does not distinguish pause, suspend, and power-off. Preserve a user-reported pause or suspend as authoritative until contrary evidence appears. For speed, start from the outcome and choose the shortest path that can prove it. After relevant state changes, recheck only the facts the task depends on, surface user-controlled handoffs early, and keep independent work moving.
-
-## What the agent may do
-
-| Action | Rule |
-| --- | --- |
-| Launch Fusion in the background | Proceed |
-| Resume the configured VM when it is known to be paused or suspended | Proceed unless the user says they will do it |
-| Start the configured VM when it is known to be powered off | Proceed |
-| Run read-only checks; use SSH, background capture, or Guest Operations | Proceed for the VM, files, and actions named in the request |
-| Bring an app forward; change Mac focus; move or capture the Mac pointer | Ask first |
-| Enter a password, passkey, multifactor response, or approve a prompt that confirms the user's identity or grants account access | Stop for the user |
-| Use another VM or account; suspend or stop Windows; revert a snapshot; delete persistent data; modify another checkout | Ask first |
-
-Do not let two agents or processes modify the same checkout or process tree at the same time.
-
-## Choose how to work
-
-1. Name the check that would show the requested work is complete.
-2. Choose the method that can run that check.
-3. Check that method. If it fails, find the first component that did not respond as expected. Do not convert a capability failure into a more specific VM power-state claim or restart a VM that may be paused or suspended:
-
-   ```text
-   Tools:   Fusion -> VM -> Tools -> Guest Operations
-   SSH:     Fusion -> VM -> network -> route and SSH host key -> Windows account -> process
-   Desktop: Fusion -> VM -> Tools -> interactive launch -> signed-in Windows desktop -> application
-   ```
-
-4. Use the linked recipe. Read its output before acting again.
-
-| Goal | Method | Recipe |
+| Need | Default | Read when needed |
 | --- | --- | --- |
-| VM startup, power, Tools, or address | `vmrun` | [Lifecycle](references/lifecycle.md) |
-| One or two commands known before execution | SSH | [Direct SSH](references/command-work.md#direct-ssh) |
-| A multiline PowerShell script known before execution | SSH PowerShell helper | [Scripted PowerShell](references/command-work.md#scripted-powershell) |
-| One self-contained task where each next step can depend on earlier output | Bounded Windows Codex | [Bounded Windows Codex run](references/command-work.md#bounded-windows-codex-run) |
-| A delegated assignment across turns, or work that may need steering or answered requests | Managed Windows Codex | [Managed delegation](references/managed-delegation.md) |
-| Which window or dialog is visible and has Windows input focus | Interactive launch | [Desktop work](references/desktop-work.md) |
-| SSH or route recovery | Tools, then SSH | [Access recovery](references/access-recovery.md) |
+| Run a known command or inspect a file/process | SSH for simple commands; PowerShell helper for scripts | [Command work](references/command-work.md) |
+| Diagnose, implement, or build with Windows-side judgment | One bounded Windows Codex assignment | [Command work](references/command-work.md#delegate-one-outcome) |
+| Steer the same assignment or handle interactive requests | Managed Windows Codex session | [Managed delegation](references/managed-delegation.md) |
+| Build or test an exact source revision | Fetch the revision and use an isolated guest worktree | [Source and builds](references/source-and-builds.md) |
+| Open a file, dismiss a dialog, or sign in while the user is present | Ask for the short UI step when faster than automation | [Desktop work](references/desktop-work.md) |
+| Repeat desktop actions or inspect controls | Existing app helper, then interactive UI Automation | [Desktop work](references/desktop-work.md#inspect-the-windows-desktop) |
+| Establish visual appearance | Fusion capture of the relevant Windows screen | [Desktop work](references/desktop-work.md#capture-or-send-input) |
+| Make Windows available | Check the required capability; start or resume only if needed | [VM lifecycle](references/lifecycle.md) |
+| Repair failed access | Diagnose the failed method before changing configuration | [Access recovery](references/access-recovery.md) |
 
-After one quoting failure, nested logic, or about 30 seconds of command composition, move from direct SSH to scripted PowerShell, bounded Windows Codex, or managed delegation.
+These method choices are defaults. A user's choice of executor or workflow takes precedence. Use a working route immediately; a successful SSH command does not need a separate all-capabilities preflight. Delegation helpers perform their own readiness checks.
 
-When managed delegation starts, make Windows Codex the sole executor for that checkout. The Mac agent coordinates, answers requests, and performs host-only desktop or UAC support. It does not run independent checkout commands or duplicate the delegated work until the active turn ends.
+## Keep the boundaries clear
 
-## Finish
+- **Scope:** Preserve unrelated files and ongoing work. Verify the VM, account, and target paths before destructive or identity-sensitive actions. Changing VM/account, taking over another checkout, resetting or shutting down Windows, changing snapshots, or repairing access configuration needs authorization covering that effect. Do not ask again when it already exists.
+- **Identity:** The user enters passwords, PINs, passkeys, and MFA responses in identity prompts. Existing configured credentials may be used by the helpers; never copy secrets into prompts or logs. Approve UAC only for an authorized elevation with a verified program and action.
+- **Input:** Get consent before taking Mac focus or controlling the Mac pointer, unless already authorized. Guest-only automation can proceed without that consent when it leaves Mac input alone. Only one actor controls the Windows desktop at a time.
+- **Ownership:** Once delegated, Windows Codex owns changes to its checkout and processes. The Mac coordinates and supplies requested host support. Do not run a competing implementation, build, or desktop driver. End or interrupt the active work and reconcile its state before taking over.
+- **Uncertain completion:** After a timeout or lost connection, inspect what ran and changed before repeating a mutation. Stop only task-owned processes; never kill every Codex, PowerShell, or Acrobat process as cleanup.
 
-Use the method that can show completion. For managed delegation, treat `item/completed` and `turn/completed` as terminal protocol state; treat deltas as progress only. Do not treat an agent report as completion until the relevant file, process, test, or visible Windows check agrees. Remove only temporary files and processes created for the current task.
+## Use evidence that answers the question
+
+The access methods are independent. SSH proves command execution in its account; Tools enables Guest Operations; an interactive launch reaches the signed-in desktop; a Fusion capture shows the screen Fusion displays. An unknown Tools or VM field does not invalidate a successful SSH result. A failed access method does not establish that Windows is powered off.
+
+For a build, retain the command result and artifact identity. For installation, check the installed artifact. For visible behavior, observe the application. Reuse evidence that already supports the claim; add a check only for a remaining gap. A guest's final report is useful when backed by its recorded commands and results. Protocol completion establishes that the agent stopped, not that the product works.
+
+When a quick user action would unblock the work, give the exact step and the state to leave behind. Stop automated input before handing over, then resume verification after the user is done. Do not spend minutes inventing UI automation for a ten-second action unless automation itself is the deliverable.
+
+Finish by stating the result, the relevant proof, and any remaining limitation. Leave the VM running unless the user requested otherwise. Remove temporary files and processes created for this task when they are no longer needed.

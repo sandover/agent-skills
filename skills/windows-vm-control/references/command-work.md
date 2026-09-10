@@ -1,61 +1,86 @@
 # Command work
 
-Use the simplest method that fits the work. All commands below use the configured SSH alias unless overridden.
+Use a known operation directly. Delegate when Windows-side diagnosis or implementation benefits from an agent. Use a managed session when follow-up direction or user input is likely; a bounded run is easiest when the assignment can finish without either.
 
-## Direct SSH
+## Run a command
 
-Use this when one or two commands are known before execution:
+For a simple command, use the configured SSH alias (`windows-vm` in these examples):
 
 ```bash
 ssh -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1 windows-vm whoami
 ```
 
-The exit status and output show only what happened in the SSH account, `PATH`, and inherited environment. If quoting or multiline logic appears, stop and use the PowerShell helper.
+For PowerShell variables, pipelines, JSON, or multiline logic, write a host `.ps1` file and use the helper. This avoids passing PowerShell through multiple shells. For example, save this as `/private/tmp/windows-check.ps1`:
 
-## Scripted PowerShell
-
-Use this for a short PowerShell script whose commands are known before it runs:
-
-```bash
-scripts/windows-vm-powershell --timeout 30 /absolute/host/task.ps1
+```powershell
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[pscustomobject]@{
+    computer = $env:COMPUTERNAME
+    user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    directory = (Get-Location).Path
+} | ConvertTo-Json -Compress
 ```
 
-The helper uses the system Windows PowerShell and preserves stdin, stdout, stderr, and the script exit status. It uses `EncodedCommand` for a small script. For a larger script, it uses a unique file in the Windows temporary directory and removes that file after execution. Exit 76 means cleanup could not be confirmed; stderr names the remaining file. For machine-readable checks, suppress PowerShell progress output and reserve stdout for the final JSON result.
+```bash
+scripts/windows-vm-powershell --timeout 30 /private/tmp/windows-check.ps1
+```
 
-Set `$ErrorActionPreference = 'Stop'` when any PowerShell error must fail the task. Use UTF-8 with a byte-order mark for non-ASCII Windows PowerShell 5 scripts.
+The helper runs Windows PowerShell, preserves stdin/stdout/stderr and exit status, and removes its temporary guest script. Exit `76` means cleanup was not confirmed; stderr identifies the remaining file. Small scripts use `EncodedCommand`. Save non-ASCII scripts as UTF-8 with a BOM for Windows PowerShell 5.
 
-## Bounded Windows Codex run
+`$ErrorActionPreference = 'Stop'` handles PowerShell errors. Check `$LASTEXITCODE` explicitly after native commands:
 
-Use this when each next step can depend on earlier output:
+```powershell
+& git -C 'C:\src\project' status --short
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+```
+
+An SSH process can have a different environment from an interactive terminal. Set required variables in the process that invokes the command. If an executable is missing, check its path and version in a new SSH process before installing anything. Existing processes do not acquire later environment changes.
+
+## Delegate one outcome
+
+Write a UTF-8 handoff file. Include the facts the guest needs to make decisions: outcome, exact checkout/revision, allowed effects, unrelated work to preserve, and evidence to return. Keep project-specific build and QA instructions in the project.
+
+Example handoff, with paths and revision filled from current evidence:
+
+```text
+Build the specified revision in the isolated Windows worktree C:\src\project-proof.
+Verify HEAD equals the supplied full SHA before building. Read the checkout's instructions.
+Use the project's build command for the installed application's architecture.
+Return the command exit status, first failure if any, artifact path/hash/architecture,
+and final Git status. Build only; installation is outside this assignment.
+Preserve unrelated work and cached dependencies. Do not push or deploy.
+If a desktop step is needed, report the exact step for the user and finish this run.
+```
 
 ```bash
 scripts/windows-codex-run \
-  --cwd 'C:\src\project' \
-  --timeout 300 \
-  < /absolute/host/handoff.txt
+  --cwd 'C:\src\project-proof' \
+  --timeout 900 \
+  < /private/tmp/windows-handoff.txt
 ```
 
-The prompt names the requested outcome, allowed reads and changes, unrelated work to preserve, required checks, and forbidden actions outside the named VM and checkout. For builds, name the guest OS architecture, target application architecture, and artifact architecture separately. Prefer a project-owned build command that reports its exit phase and artifact evidence; the runner only preserves that output. Add `--allow-non-git` only for an intentional non-checkout directory. Override the Windows Codex model or reasoning only when the task needs it.
+Keep the runner in an execution session you can poll or interrupt. Retain stdout (JSONL events) and stderr (readiness, process, and cleanup information) when needed for follow-up. Poll at meaningful intervals and keep the user informed during long builds.
 
-Before each launch, the runner finds the current Codex executable and reads the active approval and sandbox settings. The Windows Codex configuration is the only place that sets these values. On the approved test VM they must be `approval_policy = "never"` and `sandbox_mode = "danger-full-access"`. Different values stop the run.
+The runner waits for readiness, locates Codex, and checks its active policy before launching. `--readiness-wait` controls this separate startup allowance; `--timeout` bounds the assignment. Use `--allow-non-git` only for an intentional non-checkout directory. Preserve the configured model and reasoning unless an authorized task choice requires an override.
 
-JSONL goes to stdout. Status, Windows process, and cleanup information goes to stderr. These exit codes require a decision:
+The bundled runners currently require the approved VM profile: `approval_policy = "never"` and `sandbox_mode = "danger-full-access"`. A mismatch stops the runner. This is a local runner requirement, not a reason to weaken an arbitrary machine's settings. Report the mismatch and use an already-authorized direct route if suitable; do not override the policy on the command line or silently rewrite configuration.
 
-| Exit | Meaning | Next action |
-| --- | --- | --- |
-| 74 | Windows Codex requested user input | Return control to the user |
-| 76 | Process cleanup was not confirmed | Inspect Windows processes before retrying |
-| 77 | Windows Codex requested approval | Review the specific request |
-| 124 | Timeout | Inspect running processes and files changed before the timeout |
+| Exit | What to do |
+| --- | --- |
+| `0` | Read the final result and its supporting evidence. |
+| `74` | User input requested. A bounded run cannot accept a continued conversation; resolve the question and issue a new scoped assignment, or use a managed session. |
+| `77` | Inspect the approval request and compare it with existing authorization. |
+| `76` | Cleanup is unconfirmed. Inspect the recorded task process tree before another executor starts. |
+| `124` | Assignment timed out. Inspect partial results and changed files before deciding what remains. |
+| Other nonzero | Read stderr to distinguish readiness, policy, checkout, process, and transport failures. |
 
-For another nonzero exit, read stderr. It names whether VM readiness, Codex settings, the checkout, the Windows process, or the SSH connection failed. Do not override the Windows Codex approval or sandbox settings on the command line.
+A request for a routine implementation choice can be answered from the authorized scope. Identity prompts belong to the user. New destructive or external effects need authorization covering them.
 
-Check the Windows Codex report with the method that can show completion. Stop if it requests credentials, asks the user to confirm identity, would delete, reset, or overwrite persistent data, names another VM, account, or checkout, or conflicts with another process modifying the same checkout.
+## Interrupt or take over
 
-Use [managed delegation](managed-delegation.md) when the same Windows Codex assignment must accept follow-up instructions, approvals, user input, or interruption while it runs.
+For a bounded run, send an interrupt to the recorded host runner through its execution session. Its INT/TERM handler attempts to stop the recorded guest process tree. Check the runner's terminal result and cleanup report; closing a terminal or losing SSH alone does not prove Windows stopped.
 
-## SSH process environment
+If cleanup is unknown, inspect only the recorded PID, its descendants, and relevant task files using the PowerShell helper. Do not target processes solely by executable name. PID existence alone is insufficient after a restart or a long delay; verify process identity before termination.
 
-An SSH process can have a different `PATH` and environment from an interactive terminal. Use `windows-vm-status --require codex` for the current Windows Codex executable file and version. For another executable, check its specific file path and run its version command from a new process.
-
-If a client works in one process but not another, compare its stored configuration without secrets, the environment of a new process, and the server address that process uses. Test authentication without printing credentials, then run one read-only operation. Do not rotate credentials or widen network access to hide the difference.
+For work likely to need steering or orderly interruption, use [managed delegation](managed-delegation.md). Before asking the user to operate Windows, confirm the active desktop automation has stopped. Reuse completed build evidence; a UI handoff does not require rebuilding.
