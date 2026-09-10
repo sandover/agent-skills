@@ -18,8 +18,11 @@ def main():
     p.add_argument('--automation-id')
     p.add_argument('--name')
     p.add_argument('--value', help='literal value; never use for secrets')
+    p.add_argument('--limit', type=int, default=100, help='maximum inspection rows (1-500)')
     p.add_argument('--timeout', type=int, default=30)
     a = p.parse_args()
+    if not 1 <= a.limit <= 500:
+        p.error('--limit must be between 1 and 500')
     if a.action != 'windows' and (a.window is None or a.pid is None):
         p.error('--window and --pid are required')
     if a.action in ('invoke', 'set-value') and a.automation_id is None and a.name is None:

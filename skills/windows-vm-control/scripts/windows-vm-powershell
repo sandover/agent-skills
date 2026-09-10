@@ -54,6 +54,7 @@ def main():
         return 69
     guest_files = []
     result = 1
+    cleanup_status = 'confirmed'
     try:
         probe = subprocess.run(['ssh', '-n', *opts, host,
             command('[Console]::Out.Write($env:TEMP)')], capture_output=True, timeout=10)
@@ -98,10 +99,14 @@ def main():
                 cleaned = subprocess.run(['ssh','-n',*opts,host,command(cleanup)], capture_output=True, timeout=10)
                 if cleaned.returncode:
                     result = 76
+                    cleanup_status = 'unknown'
                     print('cleanup=unverified guest_scripts='+repr(guest_files), file=sys.stderr)
             except (OSError, subprocess.TimeoutExpired):
                 result = 76
+                cleanup_status = 'unknown'
                 print('cleanup=unverified guest_scripts='+repr(guest_files), file=sys.stderr)
+        if os.environ.get('WINDOWS_VM_TASK_EVENTS'):
+            print('windows_task='+json.dumps(dict(event='cleanup', status=cleanup_status)), file=sys.stderr, flush=True)
     return result
 
 

@@ -1,5 +1,11 @@
 """Exercise wrapper streaming, durable uncertainty, and process identity through stub helpers."""
 import json
+import contextlib
+import importlib.machinery
+import importlib.util
+import io
+from unittest.mock import patch
+import signal
 import os
 from pathlib import Path
 import shutil
@@ -12,7 +18,8 @@ STUB = '''#!/usr/bin/env python3
 import json,os,sys,time
 print('raw-output',end='' if os.environ.get('WAIT') else '\\n',flush=True)
 if os.environ.get('EVENT'):
- print('windows_task='+json.dumps(dict(event='completed',exit_code=int(os.environ['CODE']))),file=sys.stderr,flush=True)
+ print('windows_task='+json.dumps(dict(event='completed',exit_code=int(os.environ['CODE']),timed_out=os.environ.get('TIMEOUT')=='1')),file=sys.stderr,flush=True)
+print('windows_task='+json.dumps(dict(event='cleanup',status=os.environ.get('CLEANUP','confirmed'))),file=sys.stderr,flush=True)
 if os.environ.get('WAIT'): time.sleep(10)
 sys.exit(int(os.environ.get('CODE','0')))
 '''
@@ -24,7 +31,7 @@ class TaskTests(unittest.TestCase):
         self.tool=self.root/'windows-vm-task'; shutil.copy(SCRIPT,self.tool)
         helper=self.root/'windows-vm-powershell'; helper.write_text(STUB); helper.chmod(0o755)
         self.record=self.root/'record'
-        ps=self.root/'ps'; ps.write_text('#!/bin/sh\necho stable-test-process-start\n'); ps.chmod(0o755)
+        ps=self.root/'ps'; ps.write_text('#!/usr/bin/env python3\nimport os,sys\ntry: os.kill(int(sys.argv[2]),0); print("stable-test-process-start")\nexcept OSError: pass\n'); ps.chmod(0o755)
         self.env=dict(os.environ,PATH=str(self.root)+os.pathsep+os.environ['PATH'])
     def run_task(self, **env):
         result=subprocess.run([str(self.tool),'run','--record',str(self.record),'powershell'],
@@ -37,15 +44,15 @@ class TaskTests(unittest.TestCase):
         self.assertEqual((self.record/'stdout.log').read_text(),result.stdout)
         self.assertEqual((self.record/'result.json').stat().st_mode & 0o777,0o600)
         self.assertEqual(self.record.stat().st_mode & 0o777,0o700)
-    def test_uncertain_transport_overrides_terminal_event(self):
-        result,record=self.run_task(CODE='76',EVENT='1')
+    def test_uncertain_transport_without_terminal_evidence(self):
+        result,record=self.run_task(CODE='76',CLEANUP='unknown')
         self.assertEqual(record['completion'],'unknown')
         self.assertEqual(record['cleanup'],'unknown')
     def test_task_exit_and_timeout_have_evidence(self):
         for code in (37,124):
             with self.subTest(code=code):
                 if self.record.exists(): shutil.rmtree(self.record)
-                result,record=self.run_task(CODE=str(code),EVENT='1')
+                result,record=self.run_task(CODE=str(code),EVENT='1',TIMEOUT='1' if code==124 else '0')
                 self.assertEqual(result.returncode,code)
                 self.assertEqual(record['completion'],'confirmed')
                 self.assertEqual(record['state'],'timed_out' if code==124 else 'failed')
@@ -68,23 +75,67 @@ class TaskTests(unittest.TestCase):
         result=subprocess.run([str(self.tool),'run','powershell'],capture_output=True,text=True,
             env=dict(self.env,TMPDIR=str(self.root)))
         self.assertEqual(result.returncode,0,result.stderr)
-        record_path=Path(result.stderr.strip().split('task_record=')[-1])
+        record_path=Path(result.stderr.splitlines()[0].removeprefix('task_record='))/'result.json'
         self.assertTrue(record_path.is_file())
         self.assertEqual(json.loads(record_path.read_text())['state'],'succeeded')
 
-    def test_managed_stdin_and_state_are_preserved(self):
-        helper=self.root/'windows-codex-session'
-        helper.write_text("#!/usr/bin/env python3\nimport sys\nsys.stdout.write(sys.stdin.read())\n")
+    def test_task_exit_76_and_124_are_not_transport_or_timeout(self):
+        for code in (76,124):
+            if self.record.exists(): shutil.rmtree(self.record)
+            _,record=self.run_task(CODE=str(code),EVENT='1')
+            self.assertEqual((record['state'],record['completion'],record['cleanup']),('failed','confirmed','confirmed'))
+            self.assertEqual(record['task_exit_code'],code)
+
+    def test_cleanup_failure_preserves_known_task_completion(self):
+        _,record=self.run_task(CODE='76',EVENT='1',CLEANUP='unknown')
+        self.assertEqual(record['completion'],'confirmed')
+        self.assertEqual(record['cleanup'],'unknown')
+
+    def test_interactive_result_and_cleanup_are_separate(self):
+        helper=self.root/'windows-vm-interactive-run'
+        helper.write_text("#!/usr/bin/env python3\nimport json,sys\nfrom pathlib import Path\nPath(sys.argv[sys.argv.index('--result')+1]).write_text(json.dumps(dict(exit_code=37)))\nprint('windows_task={\"event\":\"cleanup\",\"status\":\"confirmed\"}',file=sys.stderr)\nsys.exit(75)\n")
         helper.chmod(0o755)
-        state=self.root/'controller.json';state.write_text(json.dumps(dict(turnStatus='completed')))
-        action='{"action":"close"}\n'
-        result=subprocess.run([str(self.tool),'run','--record',str(self.record),'managed','--state',str(state)],
-            input=action,capture_output=True,text=True,env=self.env)
-        self.assertEqual(result.stdout,action)
+        result=subprocess.run([str(self.tool),'run','--record',str(self.record),'interactive'],capture_output=True,text=True,env=self.env)
         record=json.loads((self.record/'result.json').read_text())
-        self.assertEqual(record['completion'],'controller_closed')
-        snapshot=subprocess.run([str(self.tool),'status',str(self.record)],capture_output=True,text=True,env=self.env)
-        self.assertEqual(json.loads(snapshot.stdout)['controller']['turnStatus'],'completed')
+        self.assertEqual(result.returncode,75)
+        self.assertEqual((record['completion'],record['cleanup'],record['task_exit_code']),('confirmed','confirmed',37))
+
+    def test_announced_directory_recovers_killed_run(self):
+        process=subprocess.Popen([str(self.tool),'run','powershell'],env=dict(self.env,WAIT='1',TMPDIR=str(self.root)),
+            stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,text=True,start_new_session=True)
+        try:
+            location=process.stderr.readline().strip().removeprefix('task_record=')
+            self.assertTrue(Path(location).is_dir())
+            process.kill();process.wait(timeout=5)
+            for target in (location,str(Path(location)/'result.json')):
+                result=subprocess.run([str(self.tool),'status',target],capture_output=True,text=True,env=self.env)
+                self.assertEqual(json.loads(result.stdout)['state'],'unknown')
+        finally:
+            try: os.killpg(process.pid,signal.SIGTERM)
+            except ProcessLookupError: pass
+            process.stderr.close()
+
+    def test_probe_missing_helper_returns_json_error(self):
+        _,record=self.run_task()
+        record['guest']=[dict(event='started',pid=42,created='test',computer='test')]
+        (self.record/'result.json').write_text(json.dumps(record))
+        (self.root/'windows-vm-powershell').unlink()
+        result=subprocess.run([str(self.tool),'status',str(self.record),'--probe'],capture_output=True,text=True,env=self.env)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertIn('probe_error',json.loads(result.stdout))
+
+    def test_probe_timeout_returns_json_error(self):
+        _,record=self.run_task()
+        record['guest']=[dict(event='started',pid=42,created='test',computer='test')]
+        (self.record/'result.json').write_text(json.dumps(record))
+        loader=importlib.machinery.SourceFileLoader('task_probe_test',str(SCRIPT))
+        spec=importlib.util.spec_from_loader(loader.name,loader)
+        module=importlib.util.module_from_spec(spec);loader.exec_module(module)
+        output=io.StringIO()
+        with patch('sys.argv',[str(SCRIPT),'status',str(self.record),'--probe']), contextlib.redirect_stdout(output):
+            with patch.object(module.subprocess,'run',side_effect=subprocess.TimeoutExpired('ssh',100)):
+                self.assertEqual(module.main(),0)
+        self.assertIn('probe_error',json.loads(output.getvalue()))
 
     def test_running_status_and_incremental_record(self):
         process=subprocess.Popen([str(self.tool),'run','--record',str(self.record),'powershell'],

@@ -47,7 +47,7 @@ public sealed class TaskJob : IDisposable {
     public void Dispose() { if(handle!=IntPtr.Zero) { CloseHandle(handle); handle=IntPtr.Zero; } }
 }
 '@
-$job=$null; $child=$null; $gate=$null; $result=1
+$job=$null; $child=$null; $gate=$null; $result=1; $terminal=$null
 try {
     $job=New-Object TaskJob
     $gateName='Local\codex-task-'+[Guid]::NewGuid().ToString('N')
@@ -86,20 +86,23 @@ try { & '$path'; exit `$LASTEXITCODE } catch { [Console]::Error.WriteLine(`$_.To
         if (-not $child.WaitForExit(10000)) { throw 'Task stop could not be confirmed' }
         [Console]::Error.WriteLine('task_timeout=stopped')
         $result=124
+        $terminal=@{event='completed'; exit_code=124; timed_out=$true}
     } else {
         $result=$child.ExitCode
+        $terminal=@{event='completed'; exit_code=$result; timed_out=$false}
         # Successful commands may intentionally launch a persistent process.
         if ($result -eq 0) { $job.SetKillOnClose($false) }
     }
 } catch {
     [Console]::Error.WriteLine($_.ToString())
     $result=76
+    $terminal=$null
 } finally {
     if ($job) { $job.Dispose() }
     if ($gate) { $gate.Dispose() }
     if ($child) { $child.Dispose() }
 }
-if ($EmitEvents -and $result -ne 76) {
-    [Console]::Error.WriteLine('windows_task='+(@{event='completed'; exit_code=$result} | ConvertTo-Json -Compress))
+if ($EmitEvents -and $null -ne $terminal) {
+    [Console]::Error.WriteLine('windows_task='+($terminal | ConvertTo-Json -Compress))
 }
 exit $result

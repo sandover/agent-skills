@@ -130,8 +130,10 @@ finish_with_cleanup() {
   local requested_exit=$1
   if ! cleanup_guest_files; then
     print -u2 -r -- "cleanup=unverified guest_task=${guest_task:-unknown}"
+    [[ -n "${WINDOWS_VM_TASK_EVENTS:-}" ]] && print -u2 'windows_task={"event":"cleanup","status":"unknown"}'
     exit 76
   fi
+  [[ -n "${WINDOWS_VM_TASK_EVENTS:-}" ]] && print -u2 'windows_task={"event":"cleanup","status":"confirmed"}'
   exit "$requested_exit"
 }
 

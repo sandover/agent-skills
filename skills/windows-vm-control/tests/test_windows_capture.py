@@ -27,7 +27,7 @@ class CaptureTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as tmp:
    p=Path(tmp)/'test.png';p.write_bytes(b'not png');self.assertFalse(capture.usable_png(p))
    p.write_bytes(b'\x89PNG\r\n\x1a\n');self.assertFalse(capture.usable_png(p))
- def test_fallback_preserves_cleanup_uncertainty_and_metadata(self):
+ def test_fallback_preserves_cleanup_uncertainty(self):
   with tempfile.TemporaryDirectory() as tmp:
    root=Path(tmp)
    helper=root/'windows-vm-capture';shutil.copy(Path(capture.__file__),helper)
@@ -39,7 +39,5 @@ class CaptureTests(unittest.TestCase):
    interactive.chmod(0o755)
    result=subprocess.run([str(helper),str(root/'image.png')],capture_output=True,text=True,env=dict(os.environ,WINDOWS_VM_TASK_EVENTS='1'))
    self.assertEqual(result.returncode,76,result.stderr)
-   self.assertIn('"pid":42',result.stderr)
-   self.assertIn('"event": "allocated"',result.stderr)
    self.assertFalse((root/'image.png').exists())
 if __name__=='__main__':unittest.main()

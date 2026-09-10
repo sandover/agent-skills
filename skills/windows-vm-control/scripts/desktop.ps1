@@ -13,20 +13,22 @@ function Describe($e) {
         patterns=@($e.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName })}
 }
 if ($r.action -eq 'windows') {
-    $rows=@($all | ForEach-Object { Describe $_ })
+    $rows=@($all | Select-Object -First $r.limit | ForEach-Object { Describe $_ })
+    $truncated=$all.Count -gt $r.limit
 } else {
     $windows=@($all | Where-Object { $_.Current.NativeWindowHandle -eq $r.window -and $_.Current.ProcessId -eq $r.pid })
     if ($windows.Count -ne 1) { throw "Expected one current window; found $($windows.Count)" }
     $controls=$windows[0].FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
-    $matches=@($controls | Where-Object {
+    $targets=@($controls | Where-Object {
         ($null -eq $r.automation_id -or $_.Current.AutomationId -ceq $r.automation_id) -and
         ($null -eq $r.name -or $_.Current.Name -ceq $r.name)
     })
     if ($r.action -eq 'controls') {
-        $rows=@($matches | ForEach-Object { Describe $_ })
+        $rows=@($targets | Select-Object -First $r.limit | ForEach-Object { Describe $_ })
+        $truncated=$targets.Count -gt $r.limit
     } else {
-        if ($matches.Count -ne 1) { throw "Expected one control; found $($matches.Count). Inspect controls before acting." }
-        $target=$matches[0]
+        if ($targets.Count -ne 1) { throw "Expected one control; found $($targets.Count). Inspect controls before acting." }
+        $target=$targets[0]
         if (-not $target.Current.IsEnabled -or $target.Current.IsOffscreen) { throw 'Control is disabled or offscreen' }
         if ($target.Current.IsPassword) { throw 'Identity controls belong to the user' }
         if ($r.action -eq 'invoke') {
@@ -39,4 +41,6 @@ if ($r.action -eq 'windows') {
         $rows=@([pscustomobject]@{action=$r.action; dispatched=$true; outcome='Verify application state separately'})
     }
 }
-ConvertTo-Json -InputObject $rows -Depth 5 -Compress
+if ($r.action -in @('windows','controls')) {
+    [pscustomobject]@{items=$rows; truncated=$truncated} | ConvertTo-Json -Depth 6 -Compress
+} else { ConvertTo-Json -InputObject $rows -Depth 5 -Compress }

@@ -29,7 +29,7 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(request['value'],value)
         self.assertEqual(request['name'],"user's field")
     def test_incomplete_action_is_rejected_before_execution(self):
-        for arguments in (['invoke'],['invoke','--window','42','--pid','7'],['set-value','--window','42','--pid','7','--name','x']):
+        for arguments in (['controls','--window','42','--pid','7','--limit','0'],['invoke'],['invoke','--window','42','--pid','7'],['set-value','--window','42','--pid','7','--name','x']):
             result=subprocess.run([str(self.root/'windows-vm-desktop'),*arguments],capture_output=True)
             self.assertEqual(result.returncode,2)
             self.assertEqual(result.stdout,b'')

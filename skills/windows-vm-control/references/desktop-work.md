@@ -27,11 +27,9 @@ scripts/windows-vm-desktop set-value --window 123456 --pid 1234 --automation-id 
 
 Replace example identifiers with current inspection results. `--name` is an exact, case-sensitive selector; when supplied with `--automation-id`, both must match. Actions re-resolve the window handle and owning PID, require exactly one control, check visibility and enabled state, and use its supported pattern. Password controls are rejected. Successful dispatch still needs an observation of the resulting application state. Window handles and PIDs are short-lived selectors; re-inspect after an application restart.
 
-Output is the interactive runner JSON envelope; its `output` contains the JSON array of windows, controls, or the dispatched action. Control rows include supported patterns. Unsupported patterns fail without falling back to blind input. Use `windows-vm-interactive-run` with a project-owned script for richer app-specific sequences.
+Output is the interactive runner JSON envelope; its `output` contains `{items, truncated}` for inspection, or the JSON array of dispatched actions. Inspection returns at most 100 rows by default; `--limit` accepts 1–500. If truncated, narrow with `--automation-id` or `--name`, or raise the limit. The cap never limits the uniqueness check for an action. Control rows include supported patterns. Unsupported patterns fail without falling back to blind input. Use `windows-vm-interactive-run` with a project-owned script for richer app-specific sequences.
 
-The helper launches a hidden PowerShell process through interactive Guest Operations, captures the task's stdout/stderr in a terminal JSON envelope, and cleans up its unique files. The envelope has `status`, `exit_code` when available, and `output`; task JSON appears inside the output string. It does not select a target window or grant elevation.
-
-Use the returned process/window identity to scope a more specific probe. Match the intended control and use its supported UI Automation pattern. If multiple controls match, inspect further before acting. Several known semantic actions can be batched; screenshots between every action are unnecessary.
+`windows-vm-interactive-run` launches the script on the signed-in desktop without foregrounding Fusion, captures stdout/stderr, and cleans up its temporary files. The bundled selectors target top-level windows returned by `windows`; custom scripts may be needed for application-specific child windows.
 
 | Exit | Meaning and next step |
 | --- | --- |

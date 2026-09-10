@@ -72,8 +72,6 @@ def main():
             seed=subprocess.run([str(vmrun),'createTempFileInGuest'],capture_output=True,text=True,timeout=20)
             guest=seed.stdout.strip()
             if seed.returncode or not guest or '\n' in guest: raise RuntimeError('Cannot allocate guest capture file')
-            if os.environ.get('WINDOWS_VM_TASK_EVENTS'):
-                print('windows_task='+json.dumps(dict(event='allocated', paths=[guest])), file=sys.stderr, flush=True)
             ps=tmp/'capture.ps1'
             ps.write_text("""$ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
@@ -92,7 +90,7 @@ try {
 } finally { $graphics.Dispose(); $bitmap.Dispose() }
 """.replace('NAME',guest.replace("'","''")))
             result=tmp/'result.json'
-            launched=subprocess.run([str(scripts/'windows-vm-interactive-run'),'--timeout','20','--result',str(result),str(ps)],stdout=subprocess.PIPE, stderr=None if os.environ.get('WINDOWS_VM_TASK_EVENTS') else subprocess.PIPE, timeout=55)
+            launched=subprocess.run([str(scripts/'windows-vm-interactive-run'),'--timeout','20','--result',str(result),str(ps)],capture_output=True,timeout=55)
             if launched.returncode == 76: return 76
             if result.exists():
                 envelope=json.loads(result.read_text());output=json.loads(envelope.get('output','{}'))

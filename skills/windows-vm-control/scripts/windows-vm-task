@@ -14,9 +14,7 @@ import tempfile
 import uuid
 
 SCRIPTS = Path(__file__).resolve().parent
-HELPERS = {'powershell': 'windows-vm-powershell', 'interactive': 'windows-vm-interactive-run',
-           'capture': 'windows-vm-capture', 'desktop': 'windows-vm-desktop',
-           'bounded': 'windows-codex-run', 'managed': 'windows-codex-session'}
+HELPERS = {'powershell': 'windows-vm-powershell', 'interactive': 'windows-vm-interactive-run'}
 
 
 def now():
@@ -38,18 +36,20 @@ def save(path, record):
     temporary.replace(path)
 
 
-def classify(kind, code, events, envelope=None):
-    completed = next((e for e in reversed(events) if e.get('event') == 'completed'), None)
-    if code == 0:
-        return 'succeeded', 'confirmed', 'confirmed'
-    if code == 76 or code < 0:
-        return 'unknown', 'unknown', 'unknown'
-    if envelope and envelope.get('exit_code') is not None:
-        return 'failed', 'confirmed', 'confirmed' if code == 75 else 'unknown'
-    if completed and kind == 'powershell':
-        return ('timed_out' if completed.get('exit_code') == 124 else 'failed'), 'confirmed', 'confirmed'
-    # A helper exit alone cannot distinguish a task exit from a transport/setup failure.
-    return ('timed_out' if code == 124 else 'failed'), 'unknown', 'unknown'
+def classify(code, events, envelope=None):
+    terminal = next((e for e in reversed(events) if e.get('event') == 'completed'), envelope)
+    cleanup = next((e['status'] for e in reversed(events) if e.get('event') == 'cleanup'),
+                   'confirmed' if code == 0 else 'unknown')
+    completion = 'confirmed' if terminal is not None or code == 0 else 'unknown'
+    if terminal and terminal.get('timed_out'):
+        state = 'timed_out'
+    elif code == 0:
+        state = 'succeeded'
+    elif terminal is not None:
+        state = 'failed'
+    else:
+        state = 'unknown' if code == 76 or code < 0 else ('timed_out' if code == 124 else 'failed')
+    return state, completion, cleanup, terminal
 
 
 def main():
@@ -60,13 +60,13 @@ def main():
     run.add_argument('kind', choices=HELPERS)
     run.add_argument('arguments', nargs=argparse.REMAINDER)
     status = sub.add_parser('status')
-    status.add_argument('record', help='task directory')
+    status.add_argument('record', help='announced task directory (or its result.json file)')
     status.add_argument('--probe', action='store_true', help='read-only Windows process identity check via configured SSH')
     a = p.parse_args()
     directory = Path(a.record) if a.record else Path(tempfile.mkdtemp(prefix='windows-task-')).resolve()
     if not directory.is_absolute():
         p.error('record directory must be absolute')
-    path = directory/'result.json'
+    path = directory if a.action == 'status' and directory.name == 'result.json' else directory/'result.json'
     if a.action == 'status':
         try:
             record = json.loads(path.read_text())
@@ -75,16 +75,10 @@ def main():
         if record['state'] == 'running':
             live = bool(record['host']['started']) and identity(record['host']['pid']) == record['host']['started']
             record['host_alive'] = live
-            record['next_step'] = ('Read raw output or use the managed controller action channel.' if live else
+            record['next_step'] = ('Read the task output; the host runner is still active.' if live else
                 'Host runner identity cannot be confirmed. Inspect guest process identities and effects before retrying; completion is unknown.')
             if not live:
                 record.update(state='unknown', completion='unknown', cleanup='unknown')
-        controller = record.get('evidence', {}).get('controller_state')
-        if controller:
-            try:
-                record['controller'] = json.loads(Path(controller).read_text())
-            except (OSError, ValueError) as error:
-                record['controller_read_error'] = str(error)
         if a.probe:
             processes = [e for e in record.get('guest', []) if e.get('event') == 'started' and e.get('created')]
             if processes:
@@ -92,10 +86,18 @@ def main():
                 source = '''$ErrorActionPreference='Stop'
 $items=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('PAYLOAD')) | ConvertFrom-Json
 $rows=@(foreach ($item in $items) {
- $process=Get-Process -Id $item.pid -ErrorAction SilentlyContinue
- $same=$false
- if ($process) { $same=($env:COMPUTERNAME -eq $item.computer -and $process.StartTime.ToUniversalTime().ToString('o') -eq $item.created) }
- [pscustomobject]@{pid=$item.pid; same_process_running=$same; computer=$env:COMPUTERNAME}
+ $state='wrong_host'
+ if ($env:COMPUTERNAME -eq $item.computer) {
+  try {
+   $process=Get-Process -Id $item.pid -ErrorAction SilentlyContinue
+   $state='not_found'
+   if ($process) {
+    $state='different_process'
+    if ($process.StartTime.ToUniversalTime().ToString('o') -eq $item.created) { $state='running' }
+   }
+  } catch { $state='unavailable' }
+ }
+ [pscustomobject]@{pid=$item.pid; state=$state; computer=$env:COMPUTERNAME}
 })
 ConvertTo-Json -InputObject $rows -Compress
 '''.replace('PAYLOAD', data)
@@ -107,15 +109,15 @@ ConvertTo-Json -InputObject $rows -Compress
                         record['probe_error'] = 'Multiple SSH targets recorded; inspect each target explicitly.'
                     else:
                         alias = ['--ssh', next(iter(aliases))] if aliases else []
-                        result = subprocess.run([str(SCRIPTS/'windows-vm-powershell'), *alias, '--timeout', '15', str(script)], capture_output=True, text=True, timeout=100)
                         try:
+                            result = subprocess.run([str(SCRIPTS/'windows-vm-powershell'), *alias, '--timeout', '15', str(script)], capture_output=True, text=True, timeout=100)
                             if result.returncode: raise ValueError(result.stderr)
                             record['process_observations'] = json.loads(result.stdout)
                             record['probe_note'] = 'Process identity only. An absent root does not prove descendants stopped or effects rolled back.'
-                        except ValueError as error:
+                        except (OSError, subprocess.SubprocessError, ValueError) as error:
                             record['probe_error'] = str(error)
             else:
-                record['probe_note'] = 'No guest process identity recorded. Inspect controller state and task effects.'
+                record['probe_note'] = 'No guest process identity recorded. Inspect task output and partial effects.'
         record['observed_at'] = now()
         print(json.dumps(record, indent=2))
         return 0
@@ -125,17 +127,16 @@ ConvertTo-Json -InputObject $rows -Compress
     except OSError as error:
         p.error(f'cannot create new record directory: {error}')
     arguments = a.arguments[1:] if a.arguments[:1] == ['--'] else a.arguments
-    if a.kind == 'interactive' and '--result' not in arguments:
+    if a.kind == 'interactive':
+        if '--result' in arguments:
+            p.error('the wrapper stores interactive results in its record directory; omit --result')
         arguments = ['--result', str(directory/'interactive.json'), *arguments]
     record = dict(version=1, task_id=uuid.uuid4().hex, kind=a.kind, state='running',
         completion='unknown', cleanup='pending', started_at=now(), exit_code=None,
         host=dict(pid=os.getpid(), started=identity(os.getpid())), guest=[],
         evidence=dict(stdout=str(directory/'stdout.log'), stderr=str(directory/'stderr.log')))
-    if a.kind == 'managed' and '--state' in arguments:
-        record['evidence']['controller_state'] = arguments[arguments.index('--state')+1]
-    if a.kind == 'capture' and arguments:
-        record['evidence']['image'] = str(Path(arguments[-1]).absolute())
     save(path, record)
+    print('task_record=' + str(directory), file=sys.stderr, flush=True)
     lock = threading.Lock()
     events = []
     child = None
@@ -186,30 +187,20 @@ ConvertTo-Json -InputObject $rows -Compress
         record['error'] = str(error)
         code = 69
     envelope = None
-    candidate = directory/'interactive.json'
-    if a.kind == 'interactive' and '--result' in arguments:
-        candidate = Path(arguments[arguments.index('--result')+1])
     try:
-        if a.kind == 'interactive': envelope = json.loads(candidate.read_text(encoding='utf-8-sig'))
-        if a.kind == 'desktop': envelope = json.loads((directory/'stdout.log').read_text(encoding='utf-8-sig'))
+        if a.kind == 'interactive':
+            envelope = json.loads((directory/'interactive.json').read_text(encoding='utf-8-sig'))
+            if envelope.get('exit_code') is None:
+                envelope = None
     except (OSError, ValueError):
         pass
-    state, completion, cleanup = classify(a.kind, code, events, envelope)
+    state, completion, cleanup, terminal = classify(code, events, envelope)
     record.update(state=state, completion=completion, cleanup=cleanup, exit_code=code, ended_at=now())
-    if a.kind == 'capture':
-        try:
-            record['capture_source'] = next((line.partition('=')[2] for line in (directory/'stdout.log').read_text().splitlines() if line.startswith('capture_source=')), 'unknown')
-        except OSError:
-            pass
-    if envelope:
-        record['task_exit_code'] = envelope.get('exit_code')
-    if a.kind == 'managed':
-        record['completion'] = 'controller_closed' if code == 0 else 'unknown'
-        record['cleanup'] = 'not_established'
+    if terminal is not None:
+        record['task_exit_code'] = terminal.get('exit_code')
     record['next_step'] = ('Evaluate the recorded output against the requested outcome.' if completion == 'confirmed' else
-        'Inspect recorded guest identities, controller state, and partial effects before repeating a mutation.')
+        'Inspect recorded guest identities and partial effects before repeating a mutation.')
     save(path, record)
-    print('task_record=' + str(path), file=sys.stderr)
     return code if code >= 0 else 128-code
 
 if __name__ == '__main__':

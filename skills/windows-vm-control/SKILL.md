@@ -17,7 +17,7 @@ Run `scripts/...` from this skill directory, or use absolute paths. Host sandbox
 | Diagnose, implement, or build with Windows-side judgment | One bounded Windows Codex assignment | [Command work](references/command-work.md#delegate-one-outcome) |
 | Steer the same assignment or handle interactive requests | Managed Windows Codex session | [Managed delegation](references/managed-delegation.md) |
 | Build or test an exact source revision | Fetch the revision and use an isolated guest worktree | [Source and builds](references/source-and-builds.md) |
-| Open a file or operate a dialog | Automate a known, bounded action; ask for identity or unresolved ambiguity | [Desktop work](references/desktop-work.md) |
+| Open a file or operate a dialog | Automate a known, bounded action; ask when identity or unresolved ambiguity requires assistance | [Desktop work](references/desktop-work.md) |
 | Repeat desktop actions or inspect controls | Existing app helper or bundled desktop commands | [Desktop work](references/desktop-work.md#inspect-the-windows-desktop) |
 | Establish visual appearance | Validated Fusion capture, with signed-in desktop fallback | [Desktop work](references/desktop-work.md#capture-or-send-input) |
 | Make Windows available | Check the required capability; start or resume only if needed | [VM lifecycle](references/lifecycle.md) |
@@ -41,6 +41,6 @@ The access methods are independent. SSH proves command execution in its account;
 
 For a build, retain the command result and artifact identity. For installation, check the installed artifact. For visible behavior, observe the application. Reuse evidence that already supports the claim; add a check only for a remaining gap. A guest's final report is useful when backed by its recorded commands and results. Protocol completion establishes that the agent stopped, not that the product works.
 
-Automate known, bounded UI actions. For unfamiliar UI, make a narrow inspection and continue when the target and effect are clear. Ask for user assistance when identity, unresolved ambiguity, or substantial discovery makes it worthwhile; account for the user’s preference for unattended work. When handing over, stop automated input, give the exact step and state to leave behind, then verify the result.
+Automate known, bounded UI actions. For unfamiliar UI, make a narrow inspection and continue when the target and effect are clear. Ask for user assistance when identity, unresolved ambiguity, or substantial discovery makes it worthwhile; account for any explicit user preference for unattended work. When handing over, stop automated input, give the exact step and state to leave behind, then verify the result.
 
 Finish by stating the result, the relevant proof, and any remaining limitation. Leave the VM running unless the user requested otherwise. Remove temporary files and processes created for this task when they are no longer needed.
