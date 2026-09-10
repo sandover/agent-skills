@@ -37,7 +37,7 @@ Each controller action is one JSON line:
 | Start follow-up after it ends | `{"action":"start","text":"The user opened the PDF. Read its identity without saving it."}` |
 | Close after it ends | `{"action":"close"}` |
 
-Steering uses the active turn ID as a precondition; it is rejected if the turn changed. `close` is rejected while a turn is active. After interrupting, wait for terminal turn state and reconcile any task-owned desktop automation before giving the user control. An interrupted turn can leave files or application effects behind.
+Steering uses the active turn ID as a precondition. The controller briefly retries an explicit startup-race rejection for that same turn; it never redirects the instruction to another turn or retries an uncertain response. `close` is rejected while a turn is active. After interrupting, wait for terminal turn state and reconcile any task-owned desktop automation before giving the user control. An interrupted turn can leave files or application effects behind.
 
 ## Answer requests
 

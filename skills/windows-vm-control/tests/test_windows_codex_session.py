@@ -26,6 +26,7 @@ import os
 import sys
 
 mode = os.environ.get("TEST_APP_SERVER_MODE", "complete")
+steer_attempts = 0
 turn_id = os.environ.get("TEST_TURN_ID", "turn-1")
 resumed_status = os.environ.get("TEST_RESUMED_STATUS", "completed")
 log_path = os.environ["TEST_APP_SERVER_LOG"]
@@ -75,7 +76,7 @@ for raw in sys.stdin:
             emit({"id":"question-1","method":"item/tool/requestUserInput","params":{"threadId":"thread-1","turnId":turn_id,"itemId":"item-2","isBlocking":True,"questions":[]}})
         elif mode == "unsupported":
             emit({"id":92,"method":"account/chatgptAuthTokens/refresh","params":{"reason":"unauthorized"}})
-        elif mode == "steer":
+        elif mode in {"steer", "steer_race", "steer_terminal"}:
             continue
         else:
             emit({"method":"item/commandExecution/outputDelta","params":{"threadId":"thread-1","turnId":turn_id,"itemId":"item-1","delta":"ok\\n"}})
@@ -88,6 +89,11 @@ for raw in sys.stdin:
         if request_before_response:
             emit({"id":request_id,"result":{"turn":{"id":turn_id,"status":"inProgress","items":[]}}})
     elif method == "turn/steer":
+        steer_attempts += 1
+        if mode in {"steer_race", "steer_terminal"} and steer_attempts == 1:
+            if mode == "steer_terminal": complete()
+            emit({"id":request_id,"error":{"message":"no active turn to steer"}})
+            continue
         emit({"id":request_id,"result":{"turnId":turn_id}})
     elif method == "turn/interrupt":
         emit({"id":request_id,"result":{}})
@@ -291,6 +297,17 @@ class ControllerTests(unittest.TestCase):
         steer = next(message for message in logged if message.get("method") == "turn/steer")
         self.assertEqual(steer["params"]["expectedTurnId"], "turn-1")
         self.assertIn("turn/interrupt", self.logged_methods())
+
+    def test_initial_steer_rejection_is_retried_for_same_turn(self):
+        result = self.run_controller("steer_race", [
+            {"action": "steer", "text": "Narrow check"}, {"action": "interrupt"}])
+        self.assertEqual(result.returncode, 130, result.stderr + result.stdout)
+        self.assertEqual(self.logged_methods().count("turn/steer"), 2)
+
+    def test_steer_is_not_retried_after_target_ends(self):
+        result = self.run_controller("steer_terminal", [{"action": "steer", "text": "Narrow check"}])
+        self.assertEqual(self.logged_methods().count("turn/steer"), 1)
+        self.assertIn("target turn ended", result.stdout)
 
     def test_failed_turn_returns_failure(self) -> None:
         result = self.run_controller("failed")

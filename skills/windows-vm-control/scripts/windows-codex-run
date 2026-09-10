@@ -271,7 +271,7 @@ service_tier_ps=$(ps_quote "$service_tier")
   print -r -- '
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
-$prompt = @($input) -join [Environment]::NewLine
+$prompt = [Console]::In.ReadToEnd()
 if (!$prompt) { [Console]::Error.WriteLine("prompt=empty"); exit 64 }
 if (![System.IO.Path]::IsPathRooted($d) -or !(Test-Path -LiteralPath $d -PathType Container)) { [Console]::Error.WriteLine("workspace=missing-or-not-absolute"); exit 70 }
 $vo = @(& $p --version 2> $null)

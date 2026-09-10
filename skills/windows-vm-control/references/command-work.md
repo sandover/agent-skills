@@ -26,7 +26,9 @@ $ProgressPreference = 'SilentlyContinue'
 scripts/windows-vm-powershell --timeout 30 /private/tmp/windows-check.ps1
 ```
 
-The helper runs Windows PowerShell, preserves stdin/stdout/stderr and exit status, and removes its temporary guest script. Exit `76` means cleanup was not confirmed; stderr identifies the remaining file. Small scripts use `EncodedCommand`. Save non-ASCII scripts as UTF-8 with a BOM for Windows PowerShell 5.
+The helper accepts UTF-8 with or without a BOM, normalizes the transferred script, and uses the same execution path for every size. It sets UTF-8 standard streams and uses process-only `ExecutionPolicy Bypass`; it does not change machine policy. Output streams remain live and explicit exit codes are preserved. Read raw caller stdin with `[Console]::In.ReadToEnd()`; `$input` represents a PowerShell pipeline, not the process input stream.
+
+A Windows job supervises the script and its descendants. `--timeout` bounds execution after launch; exit `124` means the job was stopped. Transfer and startup have separate bounds. Transport loss or host interruption returns an unverified result (`76`); the guest deadline still applies. Normal successful completion permits intentionally launched background processes to remain. Temporary guest scripts are removed; cleanup failure returns `76` and names them.
 
 `$ErrorActionPreference = 'Stop'` handles PowerShell errors. Check `$LASTEXITCODE` explicitly after native commands:
 

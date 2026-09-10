@@ -45,7 +45,7 @@ scripts/windows-vm-interactive-run \
   /private/tmp/windows-ui.ps1
 ```
 
-The helper launches through Guest Operations with `-activeWindow -interactive`, captures the task's stdout/stderr in a terminal JSON envelope, and cleans up its unique files. The envelope has `status`, `exit_code` when available, and `output`; task JSON appears inside the output string. It does not select a target window or grant elevation.
+The helper launches a hidden PowerShell process through interactive Guest Operations, captures the task's stdout/stderr in a terminal JSON envelope, and cleans up its unique files. The envelope has `status`, `exit_code` when available, and `output`; task JSON appears inside the output string. It does not select a target window or grant elevation.
 
 Use the returned process/window identity to scope a more specific probe. Match the intended control and use its supported UI Automation pattern. If multiple controls match, inspect further before acting. Several known semantic actions can be batched; screenshots between every action are unnecessary.
 
@@ -66,7 +66,7 @@ Capture through Fusion when appearance matters:
 scripts/windows-vmrun captureScreen /private/tmp/windows-screen.png
 ```
 
-Inspect the image before using its coordinates or drawing a visual conclusion. It shows Fusion's displayed desktop, not an RDP desktop. A black or stale capture leaves appearance unknown; it does not justify restarting Acrobat or sending blind input. Use a semantic probe or ask the user for the quick step.
+Inspect the image before using its coordinates or drawing a visual conclusion. The helper tries Fusion first, then the signed-in desktop when Fusion fails or returns black pixels. It reports `capture_source=fusion` or `capture_source=windows-desktop`; the fallback is not evidence of secure-desktop/UAC state and may refer to a different session than Fusion. If neither produces usable pixels it exits `75`; cleanup failure exits `76`. A nonblack image can still be stale, so inspect it before acting. An unavailable capture leaves appearance unknown; it does not justify restarting Acrobat or sending blind input. Use a semantic probe or ask the user for the quick step.
 
 Only send text after a current observation establishes the intended control's input focus:
 
@@ -82,4 +82,4 @@ scripts/windows-vmrun typeKeystrokesInGuest 'literal text'
 
 Leave identity prompts for the user. Stored Guest Operations credentials enable the helper but do not authorize typing a password into Windows login, website login, or an MFA prompt.
 
-UAC may switch to a secure desktop that ordinary UI Automation cannot reach. Use a Fusion capture to identify the program, publisher, and requested action. If the elevation and Mac input are already authorized, act on the verified prompt through the available Mac UI controls. Otherwise ask for the specific missing consent or have the user click it. If the prompt cannot be seen reliably or requests credentials, hand it to the user. Never approve by blind keystrokes.
+UAC may switch to a secure desktop that ordinary UI Automation cannot reach. Use a capture reported as `capture_source=fusion` to identify the program, publisher, and requested action. A desktop fallback cannot authorize a secure-desktop click. If the elevation and Mac input are already authorized, act on the verified prompt through the available Mac UI controls. Otherwise ask for the specific missing consent or have the user click it. If the prompt cannot be seen reliably or requests credentials, hand it to the user. Never approve by blind keystrokes.

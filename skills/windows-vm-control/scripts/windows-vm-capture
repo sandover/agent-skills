@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""Capture usable Windows pixels without foregrounding Fusion; reject black captures."""
+import argparse
+import json
+import os
+from pathlib import Path
+import struct
+import subprocess
+import sys
+import tempfile
+import zlib
+
+
+def _usable_png(path):
+    """Read RGB/gray PNG scanlines, including filters, without an imaging dependency."""
+    data = Path(path).read_bytes()
+    if data[:8] != b'\x89PNG\r\n\x1a\n':
+        return False
+    pos=8; compressed=bytearray(); palette=None
+    while pos < len(data):
+        size=struct.unpack('>I',data[pos:pos+4])[0]; kind=data[pos+4:pos+8]
+        body=data[pos+8:pos+8+size]; pos+=size+12
+        if kind==b'IHDR': width,height,depth,color,_,_,interlace=struct.unpack('>IIBBBBB',body)
+        elif kind==b'IDAT': compressed.extend(body)
+        elif kind==b'PLTE': palette=body
+    if depth!=8 or interlace or width<2 or height<2:
+        return False
+    channels={0:1,2:3,3:1,4:2,6:4}.get(color)
+    if not channels: return False
+    raw=zlib.decompress(compressed); stride=width*channels; prev=bytearray(stride); offset=0
+    for _ in range(height):
+        filt=raw[offset]; row=bytearray(raw[offset+1:offset+1+stride]); offset+=stride+1
+        for i in range(stride):
+            a=row[i-channels] if i>=channels else 0; b=prev[i]; c=prev[i-channels] if i>=channels else 0
+            if filt==1: predictor=a
+            elif filt==2: predictor=b
+            elif filt==3: predictor=(a+b)//2
+            elif filt==4:
+                p=a+b-c; pa,pb,pc=abs(p-a),abs(p-b),abs(p-c)
+                predictor=a if pa<=pb and pa<=pc else b if pb<=pc else c
+            elif filt==0: predictor=0
+            else: return False
+            row[i]=(row[i]+predictor)&255
+        for i in range(0,stride,channels):
+            rgb=palette[row[i]*3:row[i]*3+3] if color==3 and palette else row[i:i+(3 if color in (2,6) else 1)]
+            if any(v>8 for v in rgb): return True
+        prev=row
+    return False
+
+
+def usable_png(path):
+    try:
+        return _usable_png(path)
+    except (OSError, ValueError, IndexError, struct.error, zlib.error, UnboundLocalError):
+        return False
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('output');args=parser.parse_args()
+    target=Path(args.output).absolute(); scripts=Path(__file__).parent; vmrun=scripts/'windows-vmrun'
+    if not target.parent.is_dir(): parser.error('output directory does not exist')
+    env=dict(os.environ,WINDOWS_VM_CAPTURE_RAW='1')
+    guest=None
+    with tempfile.TemporaryDirectory(prefix='windows-capture-') as tmp:
+        tmp=Path(tmp); image=tmp/'screen.png'
+        def attempt():
+            nonlocal guest
+            first=subprocess.run([str(vmrun),'captureScreen',str(image)],env=env,timeout=25,capture_output=True)
+            if first.returncode==0 and image.exists() and usable_png(image):
+                target.write_bytes(image.read_bytes());print('capture_source=fusion');return 0
+            print('Fusion capture unavailable or black; trying signed-in Windows desktop',file=sys.stderr)
+            seed=subprocess.run([str(vmrun),'createTempFileInGuest'],capture_output=True,text=True,timeout=20)
+            guest=seed.stdout.strip()
+            if seed.returncode or not guest or '\n' in guest: raise RuntimeError('Cannot allocate guest capture file')
+            ps=tmp/'capture.ps1'
+            ps.write_text("""$ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
+Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public static class CaptureDpi { [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); }'
+[CaptureDpi]::SetProcessDPIAware() | Out-Null
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$bounds=[Windows.Forms.SystemInformation]::VirtualScreen
+$bitmap=New-Object Drawing.Bitmap($bounds.Width,$bounds.Height)
+$graphics=[Drawing.Graphics]::FromImage($bitmap)
+try {
+ $graphics.CopyFromScreen($bounds.Left,$bounds.Top,0,0,$bounds.Size)
+ $path='NAME'
+ $bitmap.Save($path,[Drawing.Imaging.ImageFormat]::Png)
+ [pscustomobject]@{path=$path} | ConvertTo-Json -Compress
+} finally { $graphics.Dispose(); $bitmap.Dispose() }
+""".replace('NAME',guest.replace("'","''")))
+            result=tmp/'result.json'
+            launched=subprocess.run([str(scripts/'windows-vm-interactive-run'),'--timeout','20','--result',str(result),str(ps)],capture_output=True,timeout=55)
+            if result.exists():
+                envelope=json.loads(result.read_text());output=json.loads(envelope.get('output','{}'))
+                if output.get('path') != guest: raise RuntimeError('Capture path mismatch')
+            if launched.returncode or not guest: raise RuntimeError('Windows desktop capture failed')
+            copied=subprocess.run([str(vmrun),'copyFileFromGuestToHost',guest,str(image)],timeout=20,capture_output=True)
+            if copied.returncode or not image.exists() or not usable_png(image): raise RuntimeError('Windows desktop returned no usable pixels')
+            target.write_bytes(image.read_bytes());print('capture_source=windows-desktop (not secure-desktop evidence)');return 0
+        try:
+            result_code=attempt()
+        except (OSError,ValueError,KeyError,RuntimeError,struct.error,zlib.error,subprocess.TimeoutExpired) as error:
+            print('capture=unavailable: '+str(error),file=sys.stderr);result_code=75
+        finally:
+            if guest:
+                try:
+                    cleaned=subprocess.run([str(vmrun),'deleteFileInGuest',guest],capture_output=True,timeout=15)
+                    if cleaned.returncode:
+                        print('capture_cleanup=unverified guest_file='+guest,file=sys.stderr)
+                        result_code=76
+                except (OSError,subprocess.TimeoutExpired):
+                    print('capture_cleanup=unverified guest_file='+guest,file=sys.stderr)
+                    result_code=76
+
+        return result_code
+
+if __name__=='__main__': sys.exit(main())

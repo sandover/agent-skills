@@ -348,14 +348,22 @@ class WindowsCodexController:
             raise ControllerFailure("no active turn can be steered")
         if not text.strip():
             raise ControllerFailure("steer text is empty", 64)
-        self.request(
-            "turn/steer",
-            {
-                "threadId": snapshot["threadId"],
-                "expectedTurnId": turn_id,
-                "input": [{"type": "text", "text": text}],
-            },
-        )
+        # Some app-server versions acknowledge turn/start before registering it for steering.
+        # Retry only this explicit rejection; a lost response could have accepted the input.
+        deadline = time.monotonic() + min(5, self.args.rpc_timeout)
+        while True:
+            if self.state.snapshot().get("activeTurnId") != turn_id:
+                raise ControllerFailure("target turn ended before steering was accepted")
+            try:
+                self.request("turn/steer", {
+                    "threadId": snapshot["threadId"], "expectedTurnId": turn_id,
+                    "input": [{"type": "text", "text": text}],
+                })
+                break
+            except ControllerFailure as error:
+                if "no active turn to steer" not in str(error) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.1)
         self.emit_controller("actionAccepted", action="steer", turnId=turn_id)
 
     def interrupt(self) -> None:

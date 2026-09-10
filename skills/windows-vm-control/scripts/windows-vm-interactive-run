@@ -72,6 +72,18 @@ result_parent=${result_path:h}
 host_temp=$(mktemp -d -t windows-vm-interactive-run.XXXXXX) || { print -u2 'could not create host temporary directory'; exit 73; }
 trap 'rm -rf -- "$host_temp"' EXIT
 
+# Windows PowerShell 5 reads file scripts reliably with a UTF-8 BOM.
+if ! python3 - "$task_path" "$host_temp/task.ps1" <<'NORMALIZE'
+from pathlib import Path
+import sys
+Path(sys.argv[2]).write_text(Path(sys.argv[1]).read_text(encoding='utf-8-sig'), encoding='utf-8-sig')
+NORMALIZE
+then
+  print -u2 'task must be valid UTF-8'
+  exit 65
+fi
+task_path="$host_temp/task.ps1"
+
 guest_seed=''
 guest_task=''
 guest_runner=''
@@ -179,9 +191,9 @@ if ! "$vmrun" copyFileFromHostToGuest "$runner_script" "$guest_runner"; then
 fi
 
 if ! "$vmrun" runProgramInGuest \
-  -noWait -activeWindow -interactive \
+  -noWait -interactive \
   'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' \
-  -NoLogo -NoProfile -ExecutionPolicy Bypass \
+  -NoLogo -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass \
   -File "$guest_runner" \
   -TaskPath "$guest_task" \
   -StartedPath "$guest_started" \

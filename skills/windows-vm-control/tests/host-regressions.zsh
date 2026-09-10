@@ -95,72 +95,9 @@ TEST_STATUS_MODE=probe-failed TEST_SSH_LOG="$temp_dir/ssh.log" PATH="$status_dir
 rg -q '^ssh=probe_failed$' "$temp_dir/out" || fail 'malformed SSH probe output was not classified'
 
 payload_dir="$temp_dir/payload"
-mkdir -p "$payload_dir/stub"
-cp "$skill_dir/scripts/windows-vm-powershell" "$payload_dir/"
-cat > "$payload_dir/stub/ssh" <<'STUB'
-#!/bin/zsh
-print -r -- "$*" >> "$TEST_SSH_LOG"
-if [[ "$*" == *'Out.Write($env:TEMP)'* ]]; then
-  print -r -- 'C:\Users\test\AppData\Local\Temp'
-  exit 0
-fi
-if [[ -n "${TEST_REMOTE_FAIL_ONCE_FILE:-}" ]]; then
-  if [[ ! -e "$TEST_REMOTE_FAIL_ONCE_FILE" ]]; then
-    print failed > "$TEST_REMOTE_FAIL_ONCE_FILE"
-    exit "${TEST_REMOTE_EXIT:-1}"
-  fi
-  exit "${TEST_CLEANUP_EXIT:-0}"
-fi
-exit "${TEST_REMOTE_EXIT:-0}"
-STUB
-cat > "$payload_dir/stub/scp" <<'STUB'
-#!/bin/zsh
-print -r -- "$*" >> "$TEST_SCP_LOG"
-exit "${TEST_SCP_EXIT:-0}"
-STUB
-chmod +x "$payload_dir/stub/ssh" "$payload_dir/stub/scp"
+mkdir -p "$payload_dir"
 print -r -- "Write-Output 'small'" > "$payload_dir/small.ps1"
-perl -e 'print "# x\n" x 1500' > "$payload_dir/large.ps1"
-: > "$temp_dir/payload-ssh.log"
-: > "$temp_dir/payload-scp.log"
-TEST_SSH_LOG="$temp_dir/payload-ssh.log" TEST_SCP_LOG="$temp_dir/payload-scp.log" \
-  PATH="$payload_dir/stub:$PATH" \
-  run_capture 0 "$payload_dir/windows-vm-powershell" "$payload_dir/small.ps1"
-[[ ! -s "$temp_dir/payload-scp.log" ]] || fail 'small payload used file transfer'
-[[ "$(wc -l < "$temp_dir/payload-ssh.log" | tr -d '[:space:]')" == 1 ]] || fail 'small payload did not use one SSH command'
-
-: > "$temp_dir/payload-ssh.log"
-: > "$temp_dir/payload-scp.log"
-TEST_SSH_LOG="$temp_dir/payload-ssh.log" TEST_SCP_LOG="$temp_dir/payload-scp.log" \
-  TEST_REMOTE_EXIT=0 PATH="$payload_dir/stub:$PATH" \
-  run_capture 0 "$payload_dir/windows-vm-powershell" "$payload_dir/large.ps1"
-rg -q 'Out.Write\(\$env:TEMP\)' "$temp_dir/payload-ssh.log" || fail 'large payload did not read the Windows temp directory'
-rg -q -- '^-n ' "$temp_dir/payload-ssh.log" || fail 'temp-directory probe could consume task stdin'
-rg -q 'windows-vm-control-.*\.ps1' "$temp_dir/payload-scp.log" || fail 'large payload did not use a unique guest script'
-rg -q -- '-EncodedCommand' "$temp_dir/payload-ssh.log" || fail 'large payload did not run through the cleanup wrapper'
-rg -q '# x' "$temp_dir/payload-ssh.log" && fail 'large payload contents leaked into SSH arguments'
-
-: > "$temp_dir/payload-ssh.log"
-: > "$temp_dir/payload-scp.log"
-TEST_SSH_LOG="$temp_dir/payload-ssh.log" TEST_SCP_LOG="$temp_dir/payload-scp.log" \
-  TEST_REMOTE_EXIT=37 TEST_REMOTE_FAIL_ONCE_FILE="$temp_dir/remote-failed-once" \
-  PATH="$payload_dir/stub:$PATH" \
-  run_capture 37 "$payload_dir/windows-vm-powershell" "$payload_dir/large.ps1"
-[[ "$(wc -l < "$temp_dir/payload-ssh.log" | tr -d '[:space:]')" == 3 ]] || fail 'failed remote script did not verify guest cleanup'
-
-: > "$temp_dir/payload-ssh.log"
-: > "$temp_dir/payload-scp.log"
-TEST_SSH_LOG="$temp_dir/payload-ssh.log" TEST_SCP_LOG="$temp_dir/payload-scp.log" \
-  TEST_SCP_EXIT=9 PATH="$payload_dir/stub:$PATH" \
-  run_capture 9 "$payload_dir/windows-vm-powershell" "$payload_dir/large.ps1"
-[[ "$(wc -l < "$temp_dir/payload-ssh.log" | tr -d '[:space:]')" == 2 ]] || fail 'failed transfer did not verify guest cleanup'
-
-: > "$temp_dir/payload-ssh.log"
-: > "$temp_dir/payload-scp.log"
-TEST_SSH_LOG="$temp_dir/payload-ssh.log" TEST_SCP_LOG="$temp_dir/payload-scp.log" \
-  TEST_SCP_EXIT=9 TEST_REMOTE_EXIT=12 PATH="$payload_dir/stub:$PATH" \
-  run_capture 76 "$payload_dir/windows-vm-powershell" "$payload_dir/large.ps1"
-rg -q 'cleanup=unverified' "$temp_dir/err" || fail 'large-payload cleanup failure was not reported'
+python3 "$skill_dir/tests/test_windows_powershell.py"
 
 interactive_dir="$temp_dir/interactive"
 mkdir -p "$interactive_dir"
@@ -235,7 +172,7 @@ TEST_INTERACTIVE_MODE=success TEST_INTERACTIVE_LOG="$temp_dir/interactive.log" \
   run_capture 0 "$interactive_dir/windows-vm-interactive-run" --timeout 2 \
   --result "$temp_dir/interactive-result.json" "$payload_dir/small.ps1"
 rg -q '"status":"ok"' "$temp_dir/interactive-result.json" || fail 'interactive success result was not retrieved'
-rg -q -- '-activeWindow -interactive' "$temp_dir/interactive.log" || fail 'interactive launch flags were omitted'
+rg -q -- '-noWait -interactive' "$temp_dir/interactive.log" || fail 'interactive launch flags were omitted'
 rg -q 'copyFileFromHostToGuest .* C:\\Temp\\vmware-seed.tmp.task.ps1' "$temp_dir/interactive.log" || fail 'interactive task did not use a PowerShell extension'
 rg -q 'deleteFileInGuest C:\\Temp\\vmware-seed.tmp.runner.ps1' "$temp_dir/interactive.log" || fail 'interactive runner file was not cleaned up'
 

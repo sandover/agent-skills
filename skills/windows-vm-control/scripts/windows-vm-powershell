@@ -1,181 +1,111 @@
-#!/bin/zsh
-# Run one exact host PowerShell script through bounded SSH operations.
-# Use EncodedCommand for small scripts and a unique Windows temp file for large ones.
-# Preserve caller stdin plus remote stdout, stderr, and the script exit status.
-# Remove a transferred script after execution and report unverified cleanup distinctly.
-# Never print the script, its encoded contents, or secrets from its temporary file.
+#!/usr/bin/env python3
+"""Run normalized UTF-8 scripts through one streaming Windows job-supervised path."""
+import argparse
+import base64
+import json
+import os
+import signal
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import uuid
 
-set -u
 
-usage() {
-  print -u2 'usage: windows-vm-powershell [--ssh HOST] [--timeout SECONDS] /absolute/path/script.ps1'
-}
+def encoded(source):
+    return base64.b64encode(source.encode('utf-16le')).decode('ascii')
 
-config_root="${XDG_CONFIG_HOME:-${HOME}/.config}"
-config_path="${WINDOWS_VM_CONTROL_CONFIG:-${config_root}/windows-vm-control/config.json}"
 
-read_config() {
-  local key=$1
-  if [[ -f "$config_path" ]]; then
-    /usr/bin/plutil -extract "$key" raw -o - "$config_path" 2>/dev/null || true
-  fi
-}
+def command(source):
+    return ('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe '
+            '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass '
+            '-OutputFormat Text -EncodedCommand ' + encoded(source))
 
-ssh_host="${WINDOWS_VM_SSH_ALIAS:-$(read_config ssh_alias)}"
-ssh_host="${ssh_host:-windows-vm}"
-timeout_seconds=30
-max_encoded_chars=7000
-script_path=''
 
-while (( $# > 0 )); do
-  case "$1" in
-    --ssh)
-      (( $# >= 2 )) || { usage; exit 64; }
-      ssh_host=$2
-      shift 2
-      ;;
-    --timeout)
-      (( $# >= 2 )) || { usage; exit 64; }
-      [[ "$2" == <-> && "$2" != 0 ]] || { print -u2 'timeout must be a positive integer'; exit 64; }
-      timeout_seconds=$2
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    --)
-      shift
-      (( $# == 1 )) || { usage; exit 64; }
-      script_path=$1
-      shift
-      ;;
-    -*)
-      print -u2 -r -- "unknown argument: $1"
-      usage
-      exit 64
-      ;;
-    *)
-      [[ -z "$script_path" ]] || { print -u2 'only one PowerShell script is allowed'; exit 64; }
-      script_path=$1
-      shift
-      ;;
-  esac
-done
+def quote(value):
+    return "'" + value.replace("'", "''") + "'"
 
-[[ -n "$script_path" ]] || { usage; exit 64; }
-[[ "$script_path" == /* ]] || { print -u2 'PowerShell script path must be absolute'; exit 64; }
-[[ "${script_path:l}" == *.ps1 ]] || { print -u2 'PowerShell script must use the .ps1 extension'; exit 64; }
-[[ -e "$script_path" ]] || { print -u2 -r -- "PowerShell script does not exist: $script_path"; exit 66; }
-[[ -f "$script_path" ]] || { print -u2 -r -- "PowerShell script is not a regular file: $script_path"; exit 66; }
-[[ -r "$script_path" ]] || { print -u2 -r -- "PowerShell script is not readable: $script_path"; exit 77; }
 
-encoded_command=$(
-  /usr/bin/iconv -f UTF-8 -t UTF-16LE "$script_path" |
-    /usr/bin/base64 |
-    /usr/bin/tr -d '\n'
-) || { print -u2 'failed to encode PowerShell script as UTF-16LE'; exit 65; }
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--ssh')
+    parser.add_argument('--timeout', type=int, default=30)
+    parser.add_argument('script')
+    args = parser.parse_args()
+    path = Path(args.script)
+    if args.timeout <= 0:
+        parser.error('timeout must be positive')
+    if not path.is_absolute() or path.suffix.lower() != '.ps1' or not path.is_file():
+        parser.error('script must be an existing absolute .ps1 path')
+    try:
+        source = path.read_text(encoding='utf-8-sig')
+    except (OSError, UnicodeError) as error:
+        print(f'Cannot read UTF-8 script: {error}', file=sys.stderr)
+        return 65
+    config_path = Path(os.environ.get('WINDOWS_VM_CONTROL_CONFIG',
+        str(Path(os.environ.get('XDG_CONFIG_HOME', str(Path.home()/'.config'))) / 'windows-vm-control/config.json')))
+    config = json.loads(config_path.read_text()) if config_path.exists() else {}
+    host = args.ssh or os.environ.get('WINDOWS_VM_SSH_ALIAS') or config.get('ssh_alias', 'windows-vm')
+    opts = ['-o','BatchMode=yes','-o','ConnectTimeout=5','-o','ConnectionAttempts=1',
+            '-o','ServerAliveInterval=5','-o','ServerAliveCountMax=3']
+    runner = Path(__file__).with_name('powershell-runner.ps1')
+    if not runner.is_file():
+        print('Missing powershell-runner.ps1', file=sys.stderr)
+        return 69
+    guest_files = []
+    result = 1
+    try:
+        probe = subprocess.run(['ssh', '-n', *opts, host,
+            command('[Console]::Out.Write($env:TEMP)')], capture_output=True, timeout=10)
+        if probe.returncode:
+            sys.stderr.buffer.write(probe.stderr)
+            return probe.returncode
+        temp = probe.stdout.decode('utf-8').strip()
+        if not temp or '\n' in temp or '\r' in temp:
+            raise ValueError('Invalid Windows temporary path')
+        stem = temp + '\\windows-vm-control-' + uuid.uuid4().hex
+        guest_files = [stem+'.ps1', stem+'-runner.ps1']
+        with tempfile.TemporaryDirectory(prefix='windows-powershell-') as local:
+            normalized = Path(local)/'task.ps1'
+            normalized.write_text(source, encoding='utf-8-sig')
+            for src, dst in zip([normalized, runner], guest_files):
+                transfer = subprocess.run(['scp', *opts, '--', str(src), host+':'+dst.replace('\\','/')], timeout=15)
+                if transfer.returncode:
+                    result = transfer.returncode
+                    break
+            else:
+                invocation = '& '+quote(guest_files[1])+' -TaskPath '+quote(guest_files[0])+f' -TimeoutSeconds {args.timeout}; exit $LASTEXITCODE'
+                # The guest owns the task deadline. This outer bound covers setup/transport failure.
+                process = subprocess.run(['ssh', *opts, host, command(invocation)], timeout=args.timeout+30)
+                result = process.returncode
+    except subprocess.TimeoutExpired:
+        print('transport_timeout=unverified; guest task has its own deadline', file=sys.stderr)
+        result = 76
+    except KeyboardInterrupt:
+        # Do not claim an SSH disconnect stopped Windows. The guest job still enforces its deadline.
+        print('transport_interrupted=unverified; guest task has its own deadline', file=sys.stderr)
+        result = 76
+    except (OSError, ValueError) as error:
+        print(str(error), file=sys.stderr)
+        result = 75
+    finally:
+        if guest_files:
+            paths = ','.join(quote(p) for p in guest_files)
+            cleanup = f'$ErrorActionPreference="Stop"; foreach ($p in @({paths})) {{ if (Test-Path -LiteralPath $p) {{ Remove-Item -LiteralPath $p -Force }}; if (Test-Path -LiteralPath $p) {{ exit 76 }} }}'
+            try:
+                cleaned = subprocess.run(['ssh','-n',*opts,host,command(cleanup)], capture_output=True, timeout=10)
+                if cleaned.returncode:
+                    result = 76
+                    print('cleanup=unverified guest_scripts='+repr(guest_files), file=sys.stderr)
+            except (OSError, subprocess.TimeoutExpired):
+                result = 76
+                print('cleanup=unverified guest_scripts='+repr(guest_files), file=sys.stderr)
+    return result
 
-encoded_chars=${#encoded_command}
-ssh_options=(
-  -o BatchMode=yes
-  -o ConnectTimeout=5
-  -o ConnectionAttempts=1
-  -o ServerAliveInterval=5
-)
 
-run_with_timeout() {
-  local seconds=$1
-  shift
-  /usr/bin/perl -e 'alarm shift; exec @ARGV' "$seconds" "$@"
-}
-
-if (( encoded_chars <= max_encoded_chars )); then
-  remote_command="C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded_command"
-  run_with_timeout "$timeout_seconds" ssh "${ssh_options[@]}" "$ssh_host" "$remote_command"
-  result=$?
-  if (( result == 142 )); then
-    print -u2 -r -- "PowerShell command timed out after ${timeout_seconds}s"
-    exit 124
-  fi
-  exit "$result"
-fi
-
-command -v scp >/dev/null 2>&1 || { print -u2 'scp is required for a large PowerShell script'; exit 69; }
-
-temp_query='C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoLogo -NoProfile -NonInteractive -Command "[Console]::Out.Write($env:TEMP)"'
-guest_temp_dir=$(run_with_timeout 10 ssh -n "${ssh_options[@]}" "$ssh_host" "$temp_query")
-result=$?
-if (( result != 0 )); then
-  if (( result == 142 )); then
-    print -u2 'timed out while reading the Windows temporary directory'
-    exit 124
-  fi
-  exit "$result"
-fi
-guest_temp_dir=${guest_temp_dir//$'\r'/}
-[[ -n "$guest_temp_dir" && "$guest_temp_dir" != *$'\n'* ]] || {
-  print -u2 'Windows returned an invalid temporary directory'
-  exit 75
-}
-
-task_id="${EPOCHSECONDS:-0}-$$-$RANDOM"
-guest_script="${guest_temp_dir}\\windows-vm-control-${task_id}.ps1"
-scp_guest_script=${guest_script//\\//}
-
-cleanup_guest_script() {
-  local escaped_path cleanup_source cleanup_encoded cleanup_command
-  escaped_path=${guest_script//\'/\'\'}
-  cleanup_source="Remove-Item -LiteralPath '$escaped_path' -Force -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath '$escaped_path') { exit 76 }"
-  cleanup_encoded=$(print -rn -- "$cleanup_source" | /usr/bin/iconv -f UTF-8 -t UTF-16LE | /usr/bin/base64 | /usr/bin/tr -d '\n') || return 1
-  cleanup_command="C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand $cleanup_encoded"
-  run_with_timeout 10 ssh -n "${ssh_options[@]}" "$ssh_host" "$cleanup_command" >/dev/null 2>&1
-}
-
-on_signal() {
-  local signal_exit=$1
-  if ! cleanup_guest_script; then
-    print -u2 -r -- "cleanup=unverified guest_script=$guest_script"
-  fi
-  exit "$signal_exit"
-}
-trap 'on_signal 130' INT
-trap 'on_signal 143' TERM
-trap 'on_signal 129' HUP
-
-run_with_timeout 15 scp "${ssh_options[@]}" -- "$script_path" "${ssh_host}:${scp_guest_script}"
-result=$?
-if (( result != 0 )); then
-  if ! cleanup_guest_script; then
-    print -u2 -r -- "cleanup=unverified guest_script=$guest_script"
-    exit 76
-  fi
-  if (( result == 142 )); then
-    print -u2 'PowerShell script transfer timed out'
-    exit 124
-  fi
-  exit "$result"
-fi
-
-escaped_path=${guest_script//\'/\'\'}
-wrapper_source="\$script = '$escaped_path'; \$powershell = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'; \$guestExit = 1; try { & \$powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \$script; \$guestExit = \$LASTEXITCODE } finally { Remove-Item -LiteralPath \$script -Force -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath \$script) { [Console]::Error.WriteLine(\"cleanup=failed guest_exit=\$guestExit path=\$script\"); exit 76 } }; exit \$guestExit"
-wrapper_encoded=$(print -rn -- "$wrapper_source" | /usr/bin/iconv -f UTF-8 -t UTF-16LE | /usr/bin/base64 | /usr/bin/tr -d '\n') || {
-  cleanup_guest_script || print -u2 -r -- "cleanup=unverified guest_script=$guest_script"
-  exit 65
-}
-remote_command="C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand $wrapper_encoded"
-
-run_with_timeout "$timeout_seconds" ssh "${ssh_options[@]}" "$ssh_host" "$remote_command"
-result=$?
-trap - INT TERM HUP
-if (( result != 0 )); then
-  if ! cleanup_guest_script; then
-    print -u2 -r -- "cleanup=unverified guest_script=$guest_script"
-    exit 76
-  fi
-  if (( result == 142 )); then
-    print -u2 -r -- "PowerShell command timed out after ${timeout_seconds}s"
-    exit 124
-  fi
-fi
-exit "$result"
+if __name__ == '__main__':
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGHUP, interrupted)
+    sys.exit(main())

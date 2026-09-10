@@ -14,6 +14,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 $record = $null
 
@@ -26,7 +27,7 @@ function Write-JsonFile {
 try {
     $powershell = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
     $escapedTaskPath = $TaskPath.Replace("'", "''")
-    $taskCommand = "`$ErrorActionPreference = 'Stop'; & '$escapedTaskPath'"
+    $taskCommand = "`$ErrorActionPreference = 'Stop'; `$ProgressPreference = 'SilentlyContinue'; [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding(`$false); `$global:LASTEXITCODE=0; try { & '$escapedTaskPath'; exit `$LASTEXITCODE } catch { [Console]::Error.WriteLine(`$_.ToString()); exit 1 }"
     $encodedTask = [Convert]::ToBase64String(
         [System.Text.Encoding]::Unicode.GetBytes($taskCommand)
     )
@@ -35,12 +36,15 @@ try {
         '-NoProfile',
         '-NonInteractive',
         '-ExecutionPolicy', 'Bypass',
+        '-OutputFormat', 'Text',
         '-EncodedCommand', $encodedTask
     )
     $child = Start-Process -FilePath $powershell -ArgumentList $arguments `
         -NoNewWindow -PassThru `
         -RedirectStandardOutput $StdoutPath `
         -RedirectStandardError $StderrPath
+    # Retain the native handle before the child exits (PowerShell 5 Start-Process race).
+    $childHandle = $child.Handle
     Write-JsonFile -Path $StartedPath -Value @{
         runner_pid = $PID
         child_pid = $child.Id
@@ -52,6 +56,8 @@ try {
     $stderr = if (Test-Path -LiteralPath $StderrPath) {
         [System.IO.File]::ReadAllText($StderrPath)
     } else { '' }
+    $child.Refresh()
+    if ($null -eq $child.ExitCode) { throw 'Child exit code unavailable' }
     if ($child.ExitCode -eq 0) {
         $record = @{ status = 'ok'; exit_code = 0; output = $stdout }
     } else {

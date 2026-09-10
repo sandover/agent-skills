@@ -19,7 +19,7 @@ Run `scripts/...` from this skill directory, or use absolute paths. Host sandbox
 | Build or test an exact source revision | Fetch the revision and use an isolated guest worktree | [Source and builds](references/source-and-builds.md) |
 | Open a file, dismiss a dialog, or sign in while the user is present | Ask for the short UI step when faster than automation | [Desktop work](references/desktop-work.md) |
 | Repeat desktop actions or inspect controls | Existing app helper, then interactive UI Automation | [Desktop work](references/desktop-work.md#inspect-the-windows-desktop) |
-| Establish visual appearance | Fusion capture of the relevant Windows screen | [Desktop work](references/desktop-work.md#capture-or-send-input) |
+| Establish visual appearance | Validated Fusion capture, with signed-in desktop fallback | [Desktop work](references/desktop-work.md#capture-or-send-input) |
 | Make Windows available | Check the required capability; start or resume only if needed | [VM lifecycle](references/lifecycle.md) |
 | Repair failed access | Diagnose the failed method before changing configuration | [Access recovery](references/access-recovery.md) |
 
