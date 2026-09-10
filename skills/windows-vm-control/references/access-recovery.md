@@ -40,6 +40,8 @@ Avoid adding `-wait` during diagnosis unless a bounded wait is intentional. Obta
 ssh-keygen.exe -lf C:\ProgramData\ssh\ssh_host_ed25519_key.pub
 ```
 
+The public-key file may require an elevated Windows token even when Guest Operations works. If reading it returns permission denied, use an already-authorized elevated trusted route or ask the user to run this command in an elevated Windows terminal and return the fingerprint. Leave verification pending until that evidence is available; do not change file permissions or reinstall SSH just to read the fingerprint.
+
 Compare with the key observed at the address from the Mac:
 
 ```bash

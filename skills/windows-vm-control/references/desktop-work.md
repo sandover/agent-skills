@@ -48,13 +48,15 @@ Capture through Fusion when appearance matters:
 scripts/windows-vmrun captureScreen /private/tmp/windows-screen.png
 ```
 
-Inspect the image before using its coordinates or drawing a visual conclusion. The helper tries Fusion first, then the signed-in desktop when Fusion fails or returns black pixels. It reports `capture_source=fusion` or `capture_source=windows-desktop`; the fallback is not evidence of secure-desktop/UAC state and may refer to a different session than Fusion. If neither produces usable pixels it exits `75`; cleanup failure exits `76`. A nonblack image can still be stale, so inspect it before acting. An unavailable capture leaves appearance unknown; it does not justify restarting Acrobat or sending blind input. Use a semantic probe or ask the user for the quick step.
+Inspect the image before using its coordinates or drawing a visual conclusion. The helper tries Fusion first, then the signed-in desktop when Fusion fails or returns black pixels. It reports `capture_source=fusion` or `capture_source=windows-desktop`; the fallback is not evidence of secure-desktop/UAC state and may refer to a different session than Fusion. If neither produces usable pixels it exits `75`; cleanup failure exits `76`. A nonblack image can still be stale. If it does not show the intended window and current state, appearance remains unverified even when capture succeeds. An unavailable capture does not justify restarting Acrobat or sending blind input. Use a semantic probe or ask the user for the quick step.
 
 Only send text after a current observation establishes the intended control's input focus:
 
 ```bash
 scripts/windows-vmrun typeKeystrokesInGuest 'literal text'
 ```
+
+If this returns `Insufficient permissions in the host operating system`, host sandbox escalation alone may not resolve it. Use `windows-vm-desktop set-value` or a supported UI Automation pattern when available. If raw input is essential, report the host-permission blocker for authorized diagnosis; do not repeatedly retry or assume which macOS permission is missing.
 
 `vmrun` has no reliable portable mouse-click or special-key notation. Use UI Automation patterns or a known guest-side helper. Guest pointer actions, including `SetCursorPos`, are acceptable when they do not move the Mac pointer or take Mac focus. If operating through Mac input is necessary, use existing consent or obtain it first.
 
