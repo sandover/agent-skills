@@ -180,6 +180,13 @@ guest_started="${guest_seed}.started.json"
 guest_result="${guest_seed}.result.json"
 guest_stdout="${guest_seed}.stdout.txt"
 guest_stderr="${guest_seed}.stderr.txt"
+if [[ -n "${WINDOWS_VM_TASK_EVENTS:-}" ]]; then
+  guest_files
+  python3 - "${reply[@]}" <<'EVENT'
+import json,sys
+print('windows_task='+json.dumps(dict(event='allocated', paths=sys.argv[1:])), file=sys.stderr)
+EVENT
+fi
 
 if ! "$vmrun" copyFileFromHostToGuest "$task_path" "$guest_task"; then
   print -u2 'guest_operations=copy-task-failed'
@@ -206,7 +213,12 @@ fi
 
 integer deadline=$(( SECONDS + timeout_seconds ))
 result_ready=0
+start_recorded=0
 while (( SECONDS < deadline )); do
+  if [[ -n "${WINDOWS_VM_TASK_EVENTS:-}" ]] && (( ! start_recorded )) && read_started_pids; then
+    print -u2 -r -- "windows_task=$(cat "$host_temp/started.json")"
+    start_recorded=1
+  fi
   if "$vmrun" fileExistsInGuest "$guest_result" >/dev/null 2>&1; then
     result_ready=1
     break

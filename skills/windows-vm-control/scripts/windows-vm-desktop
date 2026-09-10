@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""List Windows windows, inspect controls, or invoke one exact UI Automation target."""
+import argparse
+import base64
+import json
+import signal
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('action', choices=['windows', 'controls', 'invoke', 'set-value'])
+    p.add_argument('--window', type=int, help='native window handle returned by windows')
+    p.add_argument('--pid', type=int, help='owning process ID returned by windows')
+    p.add_argument('--automation-id')
+    p.add_argument('--name')
+    p.add_argument('--value', help='literal value; never use for secrets')
+    p.add_argument('--timeout', type=int, default=30)
+    a = p.parse_args()
+    if a.action != 'windows' and (a.window is None or a.pid is None):
+        p.error('--window and --pid are required')
+    if a.action in ('invoke', 'set-value') and a.automation_id is None and a.name is None:
+        p.error('an exact --automation-id or --name is required')
+    if a.action == 'set-value' and a.value is None:
+        p.error('--value is required')
+    payload = base64.b64encode(json.dumps(vars(a), ensure_ascii=False).encode()).decode()
+    source = Path(__file__).with_name('desktop.ps1').read_text()
+    with tempfile.TemporaryDirectory(prefix='windows-desktop-') as tmp:
+        script = Path(tmp)/'desktop.ps1'
+        script.write_text("$requestBase64='" + payload + "'\n" + source, encoding='utf-8-sig')
+        result = Path(tmp)/'result.json'
+        run = subprocess.Popen([str(Path(__file__).with_name('windows-vm-interactive-run')),
+            '--timeout', str(a.timeout), '--result', str(result), str(script)], stdout=sys.stderr)
+        def interrupt(signum, frame):
+            if run.poll() is None:
+                run.send_signal(signum)
+        signal.signal(signal.SIGTERM, interrupt)
+        signal.signal(signal.SIGINT, interrupt)
+        run.wait()
+        if result.exists():
+            print(result.read_text(encoding='utf-8-sig'))
+        return run.returncode
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -65,6 +65,8 @@ def main():
             raise ValueError('Invalid Windows temporary path')
         stem = temp + '\\windows-vm-control-' + uuid.uuid4().hex
         guest_files = [stem+'.ps1', stem+'-runner.ps1']
+        if os.environ.get('WINDOWS_VM_TASK_EVENTS'):
+            print('windows_task='+json.dumps(dict(event='allocated', ssh=host, paths=guest_files)), file=sys.stderr, flush=True)
         with tempfile.TemporaryDirectory(prefix='windows-powershell-') as local:
             normalized = Path(local)/'task.ps1'
             normalized.write_text(source, encoding='utf-8-sig')
@@ -74,7 +76,7 @@ def main():
                     result = transfer.returncode
                     break
             else:
-                invocation = '& '+quote(guest_files[1])+' -TaskPath '+quote(guest_files[0])+f' -TimeoutSeconds {args.timeout}; exit $LASTEXITCODE'
+                invocation = '& '+quote(guest_files[1])+' -TaskPath '+quote(guest_files[0])+f' -TimeoutSeconds {args.timeout}' + (' -EmitEvents' if os.environ.get('WINDOWS_VM_TASK_EVENTS') else '') + '; exit $LASTEXITCODE'
                 # The guest owns the task deadline. This outer bound covers setup/transport failure.
                 process = subprocess.run(['ssh', *opts, host, command(invocation)], timeout=args.timeout+30)
                 result = process.returncode

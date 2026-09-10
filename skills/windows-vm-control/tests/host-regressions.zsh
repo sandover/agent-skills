@@ -449,4 +449,8 @@ rg -q 'codex_timeout=1s' "$temp_dir/err" || fail 'timeout was not reported'
 
 uv run --script "$skill_dir/tests/test_windows_codex_session.py"
 
+python3 "$skill_dir/tests/test_windows_task.py"
+python3 "$skill_dir/tests/test_windows_desktop.py"
+python3 "$skill_dir/tests/test_windows_capture.py"
+
 print 'host regressions: ok'

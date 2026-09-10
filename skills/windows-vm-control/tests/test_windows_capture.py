@@ -2,6 +2,9 @@ import importlib.machinery
 import importlib.util
 from pathlib import Path
 import struct
+import os
+import shutil
+import subprocess
 import tempfile
 import unittest
 import zlib
@@ -24,4 +27,19 @@ class CaptureTests(unittest.TestCase):
   with tempfile.TemporaryDirectory() as tmp:
    p=Path(tmp)/'test.png';p.write_bytes(b'not png');self.assertFalse(capture.usable_png(p))
    p.write_bytes(b'\x89PNG\r\n\x1a\n');self.assertFalse(capture.usable_png(p))
+ def test_fallback_preserves_cleanup_uncertainty_and_metadata(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   root=Path(tmp)
+   helper=root/'windows-vm-capture';shutil.copy(Path(capture.__file__),helper)
+   vmrun=root/'windows-vmrun'
+   vmrun.write_text("#!/bin/sh\nif [ \"$1\" = createTempFileInGuest ]; then echo 'C:\\\\Temp\\\\capture'; fi\nexit 0\n")
+   vmrun.chmod(0o755)
+   interactive=root/'windows-vm-interactive-run'
+   interactive.write_text("#!/bin/sh\necho 'windows_task={\"event\":\"started\",\"pid\":42}' >&2\nexit 76\n")
+   interactive.chmod(0o755)
+   result=subprocess.run([str(helper),str(root/'image.png')],capture_output=True,text=True,env=dict(os.environ,WINDOWS_VM_TASK_EVENTS='1'))
+   self.assertEqual(result.returncode,76,result.stderr)
+   self.assertIn('"pid":42',result.stderr)
+   self.assertIn('"event": "allocated"',result.stderr)
+   self.assertFalse((root/'image.png').exists())
 if __name__=='__main__':unittest.main()

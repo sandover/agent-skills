@@ -48,6 +48,13 @@ try {
     Write-JsonFile -Path $StartedPath -Value @{
         runner_pid = $PID
         child_pid = $child.Id
+        event = 'started'
+        pid = $child.Id
+        created = $child.StartTime.ToUniversalTime().ToString('o')
+        runner_created = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o')
+        computer = $env:COMPUTERNAME
+        user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        task_path = $TaskPath
     }
     $child.WaitForExit()
     $stdout = if (Test-Path -LiteralPath $StdoutPath) {

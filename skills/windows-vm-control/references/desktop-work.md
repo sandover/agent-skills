@@ -1,6 +1,6 @@
 # Desktop work
 
-Choose between user assistance and automation based on the work. When the user is present, a short request to open a PDF or dismiss a dialog often wins. Automate repeated sequences, unattended work, or actions whose repeatability is itself being tested. Prefer a project-owned desktop helper before inventing UI Automation or coordinate scripts.
+Automate known, bounded actions using an existing project helper or the bundled commands below. For unfamiliar UI, inspect the relevant window and controls; continue if the intended target and effect become clear. Ask for assistance for identity prompts, unresolved ambiguity, or when further discovery would cost substantially more than the user’s step. Weigh interruption cost and an explicit preference for unattended work; a short human action alone is not a reason to stop automation.
 
 ## Hand a step to the user
 
@@ -10,40 +10,24 @@ Stop the current desktop driver and confirm it stopped. Give the application, ex
 
 Name a specific file only when its actual location is known. If the test needs a particular fixture, explain that requirement; do not silently treat another file as equivalent. Resume with the narrow observation needed to verify the result. User assistance can establish setup, while the agent collects the evidence.
 
-If an automation attempt reveals that the next step needs substantial UI discovery and the user can do it quickly, hand it over then. Do not exhaust several unrelated techniques first.
+When discovery stops producing useful evidence, choose a targeted user handoff or explain the unattended blocker. Do not cycle through unrelated input techniques.
 
 ## Inspect the Windows desktop
 
 SSH commands run in a remote process context. For semantic inspection of the signed-in desktop, use an interactive launch. A normal process listing cannot tell you which controls are visible or focused.
 
-Save this read-only probe as `/private/tmp/windows-ui.ps1`:
-
-```powershell
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName UIAutomationTypes
-$desktop = [System.Windows.Automation.AutomationElement]::RootElement
-$windows = $desktop.FindAll(
-    [System.Windows.Automation.TreeScope]::Children,
-    [System.Windows.Automation.Condition]::TrueCondition)
-$rows = @()
-foreach ($window in $windows) {
-    $rows += [pscustomobject]@{
-        name = $window.Current.Name
-        process_id = $window.Current.ProcessId
-        automation_id = $window.Current.AutomationId
-    }
-}
-ConvertTo-Json -InputObject $rows -Compress
-```
+Use the bundled commands; no custom PowerShell is needed for ordinary inspection:
 
 ```bash
-scripts/windows-vm-interactive-run \
-  --timeout 30 \
-  --result /private/tmp/windows-ui-result.json \
-  /private/tmp/windows-ui.ps1
+scripts/windows-vm-desktop windows
+scripts/windows-vm-desktop controls --window 123456 --pid 1234
+scripts/windows-vm-desktop invoke --window 123456 --pid 1234 --automation-id 'OpenButton'
+scripts/windows-vm-desktop set-value --window 123456 --pid 1234 --automation-id 'FileName' --value 'C:\fixtures\sample.pdf'
 ```
+
+Replace example identifiers with current inspection results. `--name` is an exact, case-sensitive selector; when supplied with `--automation-id`, both must match. Actions re-resolve the window handle and owning PID, require exactly one control, check visibility and enabled state, and use its supported pattern. Password controls are rejected. Successful dispatch still needs an observation of the resulting application state. Window handles and PIDs are short-lived selectors; re-inspect after an application restart.
+
+Output is the interactive runner JSON envelope; its `output` contains the JSON array of windows, controls, or the dispatched action. Control rows include supported patterns. Unsupported patterns fail without falling back to blind input. Use `windows-vm-interactive-run` with a project-owned script for richer app-specific sequences.
 
 The helper launches a hidden PowerShell process through interactive Guest Operations, captures the task's stdout/stderr in a terminal JSON envelope, and cleans up its unique files. The envelope has `status`, `exit_code` when available, and `output`; task JSON appears inside the output string. It does not select a target window or grant elevation.
 

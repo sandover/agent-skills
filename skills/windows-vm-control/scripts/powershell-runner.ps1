@@ -1,7 +1,7 @@
 # Supervise a task in a Windows job. A gate prevents task execution before job assignment.
 # Inherit the SSH standard handles; keep stdout/stderr streaming and stdin available.
 param([Parameter(Mandatory=$true)][string]$TaskPath,
-      [Parameter(Mandatory=$true)][int]$TimeoutSeconds)
+      [Parameter(Mandatory=$true)][int]$TimeoutSeconds, [switch]$EmitEvents)
 $ErrorActionPreference='Stop'
 $ProgressPreference='SilentlyContinue'
 [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false)
@@ -74,6 +74,12 @@ try { & '$path'; exit `$LASTEXITCODE } catch { [Console]::Error.WriteLine(`$_.To
     $child.StartInfo=$info
     if (-not $child.Start()) { throw 'Cannot start task' }
     try { $job.Assign($child) } catch { $child.Kill(); throw }
+    if ($EmitEvents) {
+        $metadata=@{event='started'; pid=$child.Id; created=$child.StartTime.ToUniversalTime().ToString('o');
+            computer=$env:COMPUTERNAME; user=[Security.Principal.WindowsIdentity]::GetCurrent().Name;
+            task_path=$TaskPath; timeout_seconds=$TimeoutSeconds}
+        [Console]::Error.WriteLine('windows_task='+($metadata | ConvertTo-Json -Compress))
+    }
     $gate.Set() | Out-Null
     if (-not $child.WaitForExit($TimeoutSeconds*1000)) {
         $job.Stop()
@@ -92,5 +98,8 @@ try { & '$path'; exit `$LASTEXITCODE } catch { [Console]::Error.WriteLine(`$_.To
     if ($job) { $job.Dispose() }
     if ($gate) { $gate.Dispose() }
     if ($child) { $child.Dispose() }
+}
+if ($EmitEvents -and $result -ne 76) {
+    [Console]::Error.WriteLine('windows_task='+(@{event='completed'; exit_code=$result} | ConvertTo-Json -Compress))
 }
 exit $result
