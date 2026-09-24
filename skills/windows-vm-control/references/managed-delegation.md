@@ -1,14 +1,12 @@
 # Managed Windows Codex delegation
 
-Use this controller when the same guest assignment needs steering, follow-up turns, user input, or orderly interruption. For an assignment that can finish independently, the [bounded runner](command-work.md#delegate-one-outcome) has less setup.
+Read this when starting, steering, resuming, answering requests from, or closing a managed Windows Codex session.
 
 ## Start with clear ownership
 
-Windows Codex owns its delegated checkout, build, and task processes. The Mac owns communication, the controller, and requested host support. Read-only inspection is useful when it resolves a gap without competing with the guest. Honor stricter user instructions about stepping back after delegation.
+The controller starts one Codex thread in the SSH account. It does not attach to an arbitrary open Windows Codex UI or place the process on the signed-in desktop. If the user named an existing executor, use its established channel. Use [desktop work](desktop-work.md) for visible Windows actions.
 
-The controller starts Codex in the SSH account. It does not attach to an arbitrary open Windows Codex UI, and it does not put that process on the signed-in desktop. If the user named an existing executor, use that executor's established channel rather than silently creating a second owner. Use [desktop work](desktop-work.md) for visible Windows actions.
-
-Write a UTF-8 handoff with the outcome, checkout/revision, authorized effects, preserved work, and required evidence. Include a user-assisted UI checkpoint when appropriate. Never include secrets in handoffs, actions, events, or state files.
+Use the handoff fields from [Command work](command-work.md#delegate-one-outcome), adding a user-assisted UI checkpoint when appropriate. Never include secrets in handoffs, actions, events, or state files.
 
 ## Start or resume the controller
 
@@ -80,6 +78,8 @@ The state file uses `inProgress`, `waitingForApproval`, `waitingForInput`, `wait
 ## Reconnect without duplicating work
 
 After transport loss, run the same controller command with the same state file and without `--new`. Wait for `controller/ready` with `resumed: true`, then request status. Let the guest inspect current Git/process state and prior results before deciding what to repeat. A durable thread can preserve context even when live output was lost; reconnecting alone does not undo previous effects.
+
+When the assignment has ended and its state is reconciled, follow [VM lifecycle](lifecycle.md) to check for other owners and shut down gracefully when safe.
 
 | Exit | Interpretation |
 | --- | --- |

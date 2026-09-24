@@ -1,6 +1,6 @@
 # Access recovery
 
-Recover the method the task needs. A failed SSH connection is not a diagnosis of Windows power state. A successful SSH command remains useful when Tools is unavailable.
+When a route fails, diagnose only enough to choose the next action. Use combined status only when comparing methods will change what you do. A failed SSH connection does not establish Windows power state.
 
 ```text
 Guest Operations: Fusion → configured VM → VMware Tools → guest credentials → operation
@@ -9,10 +9,11 @@ SSH: configured alias → route/address → listener/host key → account → co
 
 ## Locate the failure
 
-Use a narrow live probe (`windows-vm-status --require ssh`, `--require codex`, or `--require vm,tools`). Use combined status when the contrast between methods will change the next action. Stop mutations if the reported computer or account is unexpected.
+Use a narrow live probe (`windows-vm-status --require ssh`, `--require codex`, or `--require vm,tools`) to distinguish the cause. Stop mutations if the reported computer or account is unexpected.
 
 | Observation | Distinguishing check or next action |
 | --- | --- |
+| `vm_power=not_running` | Follow [VM lifecycle](lifecycle.md) if the task still needs the VM. |
 | `ssh=timeout` | Confirm VM state, then compare configured address/route with Tools' address if available. A firewall source restriction or unreachable listener is also possible. |
 | `ssh=refused` | Check that the address is the configured VM and whether `sshd` is listening there. |
 | `ssh=host_key_failed` | Verify the key through the configured VM before editing trust. Failure can mean an unknown key as well as a changed key. |
@@ -20,7 +21,8 @@ Use a narrow live probe (`windows-vm-status --require ssh`, `--require codex`, o
 | `ssh=alias_unresolved` | Inspect the alias/hostname configuration. |
 | `ssh=probe_failed` | SSH connected but the Windows probe did not return expected output; inspect default shell/PowerShell behavior. |
 | `ssh=failed` | Read `ssh_error`; distinguish client launch, connection, and command errors. |
-| `codex_policy=mismatch` | The active Codex configuration differs from the runner's approved profile; see [command work](command-work.md#delegate-one-outcome). |
+| `codex_policy=mismatch` | Read the reported permission fields; they differ from the runner's profile. Do not rewrite configuration to suppress the error. See [command work](command-work.md#delegate-one-outcome). |
+| `codex_policy=failed` | Read `codex_policy_reason` and `codex_doctor_exit`; the diagnostic did not establish the policy. This is not evidence of different permissions. |
 | Tools unavailable, SSH works | Continue over SSH if it can produce the result. |
 | SSH works, desktop unavailable | Use [desktop work](desktop-work.md); signing in is unnecessary for command-only work. |
 

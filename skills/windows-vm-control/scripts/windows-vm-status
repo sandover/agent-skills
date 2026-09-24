@@ -8,7 +8,7 @@
 set -u
 
 usage() {
-  print -u2 'usage: windows-vm-status [--vmx PATH] [--ssh HOST] [--vmrun PATH] [--no-ssh] [--wait SECONDS] [--require vm,tools,ssh,codex]'
+  print -u2 'usage: windows-vm-status [--vmx PATH] [--ssh HOST] [--vmrun PATH] [--no-ssh] [--cwd WINDOWS_DIR] [--wait SECONDS] [--require vm,tools,ssh,codex]'
 }
 
 script_dir=${0:A:h}
@@ -29,6 +29,7 @@ vmx="${WINDOWS_VM_VMX_PATH:-$(read_config vmx_path)}"
 ssh_host="${WINDOWS_VM_SSH_ALIAS:-$(read_config ssh_alias)}"
 ssh_host="${ssh_host:-windows-vm}"
 check_ssh=1
+working_directory=''
 wait_seconds=0
 required=(vm tools ssh)
 require_explicit=0
@@ -70,6 +71,11 @@ while (( $# > 0 )); do
     --no-ssh)
       check_ssh=0
       shift
+      ;;
+    --cwd)
+      (( $# >= 2 )) || { usage; exit 64; }
+      working_directory=$2
+      shift 2
       ;;
     --wait)
       (( $# >= 2 )) || { usage; exit 64; }
@@ -129,6 +135,7 @@ if (( need_vm )); then
   [[ -n "$vmx" && -f "$vmx" ]] || { print -u2 'vmx_path is missing or invalid'; exit 78; }
 fi
 if (( check_ssh )); then
+  [[ -f "$script_dir/codex-policy.ps1" ]] || { print -u2 'Codex policy helper is missing'; exit 69; }
   [[ -f "$script_dir/guest-probe.ps1" ]] || { print -u2 'guest probe is missing'; exit 69; }
 fi
 
@@ -152,10 +159,17 @@ run_vmrun() {
 }
 
 if (( check_ssh )); then
+  # Keep the SSH command below Windows cmd.exe's command-line limit.
+  compressed_probe=$(
+    {
+      cwd_base64=$(print -rn -- "$working_directory" | /usr/bin/base64 | /usr/bin/tr -d '\n')
+      print -r -- "\$env:WINDOWS_VM_CONTROL_CWD=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$cwd_base64'))"
+      cat "$script_dir/codex-policy.ps1" "$script_dir/guest-probe.ps1"
+    } | /usr/bin/gzip -c | /usr/bin/base64 | /usr/bin/tr -d '\n'
+  ) || { print -u2 'failed to compress guest probe'; exit 69; }
   encoded_probe=$(
-    /usr/bin/iconv -f UTF-8 -t UTF-16LE "$script_dir/guest-probe.ps1" |
-      /usr/bin/base64 |
-      /usr/bin/tr -d '\n'
+    print -r -- "\$s=[IO.MemoryStream]::new([Convert]::FromBase64String('$compressed_probe')); \$z=[IO.Compression.GzipStream]::new(\$s,[IO.Compression.CompressionMode]::Decompress); \$r=[IO.StreamReader]::new(\$z); & ([ScriptBlock]::Create(\$r.ReadToEnd()))" |
+      /usr/bin/iconv -f UTF-8 -t UTF-16LE | /usr/bin/base64 | /usr/bin/tr -d '\n'
   ) || { print -u2 'failed to encode guest probe'; exit 69; }
   guest_probe_command="C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded_probe"
   if (( need_codex )); then
@@ -177,6 +191,7 @@ probe_once() {
   codex_path=not_found
   codex_version=not_found
   codex_policy=not_checked
+  policy_details=''
   vmrun_error=''
   tools_error=''
   guest_ip_error=''
@@ -254,6 +269,7 @@ probe_once() {
       codex_path=${${(M)${(@f)probe_output}:#codex_path=*}#codex_path=}
       codex_version=${${(M)${(@f)probe_output}:#codex_version=*}#codex_version=}
       codex_policy=${${(M)${(@f)probe_output}:#codex_policy=*}#codex_policy=}
+      policy_details=$(print -r -- "$probe_output" | sed -n '/^codex_policy_reason=/p; /^codex_doctor_exit=/p; /^codex_policy_approval=/p; /^codex_policy_filesystem=/p; /^codex_policy_network=/p')
       if [[ -n "$computer" && -n "$guest_user" ]]; then
         ssh_state=ok
         if (( need_codex )) && [[ "$codex_policy" == mismatch || "$codex_policy" == failed ]]; then
@@ -271,6 +287,7 @@ probe_once() {
         *'REMOTE HOST IDENTIFICATION HAS CHANGED'*|*'Host key verification failed'*) ssh_state=host_key_failed; (( need_ssh )) && hard_failure=1 ;;
         *'Permission denied'*) ssh_state=authentication_failed; (( need_ssh )) && hard_failure=1 ;;
         *'Connection timed out'*|*'Operation timed out'*) ssh_state=timeout ;;
+        *'The command line is too long.'*) ssh_state=probe_failed; (( need_ssh )) && hard_failure=1 ;;
         *'Connection refused'*) ssh_state=refused ;;
         *) ssh_state=failed ;;
       esac
@@ -313,6 +330,7 @@ print_status() {
     print -r -- "codex_path=$codex_path"
     print -r -- "codex_version=$codex_version"
     print -r -- "codex_policy=$codex_policy"
+    [[ -z "$policy_details" ]] || print -r -- "$policy_details"
   fi
 }
 

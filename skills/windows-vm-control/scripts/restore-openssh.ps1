@@ -51,7 +51,7 @@ function Invoke-Icacls {
 }
 
 try {
-    Write-JsonFile -Path $StartedPath -Value @{ pid = $PID }
+    Write-JsonFile -Path $StartedPath -Value @{ pid = $PID; created = (Get-Process -Id $PID).StartTime.ToUniversalTime().ToString('o'); computer = $env:COMPUTERNAME }
 
     $PublicKey = Get-Content -LiteralPath $PublicKeyPath |
         Where-Object { $_.Trim() } |

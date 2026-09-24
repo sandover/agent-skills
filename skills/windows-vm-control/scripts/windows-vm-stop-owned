@@ -1,0 +1,96 @@
+#!/usr/bin/env python3
+"""Stop a recorded Windows task tree only after checking its computer and creation time."""
+import argparse
+import base64
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+SCRIPTS = Path(__file__).resolve().parent
+
+
+def identity(path):
+    value = json.loads(Path(path).read_text())
+    if not isinstance(value, dict):
+        raise ValueError('Expected one recorded process identity')
+    pid, created, computer = (value.get(key) for key in ('pid', 'created', 'computer'))
+    if type(pid) is not int or pid <= 0 or not isinstance(created, str) or not created or not isinstance(computer, str) or not computer:
+        raise ValueError('Recorded PID, creation time, and computer are required')
+    return dict(pid=pid, created=created, computer=computer)
+
+
+def source(request):
+    payload = base64.b64encode(json.dumps(request).encode()).decode()
+    return "$requestBase64='" + payload + "'\n" + (SCRIPTS/'stop-owned-process.ps1').read_text()
+
+
+def run(arguments, timeout=20):
+    return subprocess.run(arguments, capture_output=True, text=True, timeout=timeout)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    route = parser.add_mutually_exclusive_group(required=True)
+    route.add_argument('--ssh')
+    route.add_argument('--guest-ops', action='store_true')
+    parser.add_argument('identity', help='JSON with pid, created (UTC), and computer')
+    args = parser.parse_args()
+    guest_result = None
+    result = None
+    cleanup = True
+    readback = False
+    verified = True
+    vmrun = str(SCRIPTS/'windows-vmrun')
+    try:
+        request = identity(args.identity)
+        with tempfile.TemporaryDirectory(prefix='windows-stop-owned-') as tmp:
+            tmp = Path(tmp)
+            if args.guest_ops:
+                allocated = run([vmrun, 'createTempFileInGuest'])
+                guest_result = allocated.stdout.strip()
+                if allocated.returncode or not guest_result or '\n' in guest_result or '\r' in guest_result:
+                    guest_result = None
+                    raise ValueError('Cannot allocate stop-result file')
+                request['result_path'] = guest_result
+                encoded = base64.b64encode(source(request).encode('utf-16le')).decode()
+                # An unknown identity returns nonzero; read its explicit result even then.
+                run([vmrun, 'runProgramInGuest', r'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe',
+                     '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], timeout=25)
+                copied = run([vmrun, 'copyFileFromGuestToHost', guest_result, str(tmp/'result.json')])
+                if copied.returncode:
+                    raise ValueError('Cannot read stop result')
+                result = json.loads((tmp/'result.json').read_text(encoding='utf-8-sig'))
+                readback = True
+            else:
+                script = tmp/'stop.ps1'
+                script.write_text(source(request))
+                stopped = run([str(SCRIPTS/'windows-vm-powershell'), '--ssh', args.ssh,
+                               '--timeout', '20', str(script)], timeout=90)
+                result = json.loads(stopped.stdout)
+                if stopped.returncode:
+                    raise ValueError('Task stop or helper cleanup unconfirmed: ' + stopped.stderr.strip())
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        verified = False
+        if result is None:
+            result = dict(status='unknown', message=str(error))
+        else:
+            result['verification_error'] = str(error)
+    finally:
+        if guest_result and not readback:
+            cleanup = False
+            print('cleanup=unverified stop_result=' + guest_result, file=sys.stderr)
+        elif guest_result:
+            try:
+                cleanup = run([vmrun, 'deleteFileInGuest', guest_result]).returncode == 0
+            except (OSError, subprocess.SubprocessError):
+                cleanup = False
+            if not cleanup:
+                print('cleanup=unverified stop_result=' + guest_result, file=sys.stderr)
+    print(json.dumps(result))
+    return 0 if isinstance(result, dict) and result.get('status') == 'stopped' and cleanup and verified else 76
+
+
+if __name__ == '__main__':
+    sys.exit(main())

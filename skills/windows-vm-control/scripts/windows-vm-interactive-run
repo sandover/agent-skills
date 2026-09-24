@@ -70,7 +70,10 @@ result_parent=${result_path:h}
 [[ -f "$runner_script" && -r "$runner_script" ]] || { print -u2 -r -- "interactive runner is not readable: $runner_script"; exit 69; }
 
 host_temp=$(mktemp -d -t windows-vm-interactive-run.XXXXXX) || { print -u2 'could not create host temporary directory'; exit 73; }
-trap 'rm -rf -- "$host_temp"' EXIT
+preserve_record=0
+stop_failed=0
+task_launched=0
+trap '(( preserve_record )) || rm -rf -- "$host_temp"' EXIT
 
 # Windows PowerShell 5 reads file scripts reliably with a UTF-8 BOM.
 if ! python3 - "$task_path" "$host_temp/task.ps1" <<'NORMALIZE'
@@ -121,13 +124,31 @@ read_started_pids() {
 }
 
 stop_task_processes() {
-  read_started_pids || return 0
-  [[ "$child_pid" == <-> ]] && "$vmrun" killProcessInGuest "$child_pid" >/dev/null 2>&1 || true
-  [[ "$runner_pid" == <-> ]] && "$vmrun" killProcessInGuest "$runner_pid" >/dev/null 2>&1 || true
+  (( task_launched )) || return 0
+  if ! read_started_pids; then
+    stop_failed=1
+    return 1
+  fi
+  if ! python3 - "$host_temp/started.json" "$host_temp/identity.json" <<'IDENTITY'
+import json,sys
+from pathlib import Path
+value=json.loads(Path(sys.argv[1]).read_text())
+Path(sys.argv[2]).write_text(json.dumps(dict(pid=value['runner_pid'], created=value['runner_created'], computer=value['computer'])))
+IDENTITY
+  then
+    stop_failed=1
+    return 1
+  fi
+  "$script_dir/windows-vm-stop-owned" --guest-ops "$host_temp/identity.json" >&2 || { stop_failed=1; return 1; }
 }
 
 finish_with_cleanup() {
   local requested_exit=$1
+  if (( stop_failed )); then
+    preserve_record=1
+    print -u2 -r -- "task_stop=unverified record=$host_temp guest_started=${guest_started:-unknown}"
+    exit 76
+  fi
   if ! cleanup_guest_files; then
     print -u2 -r -- "cleanup=unverified guest_task=${guest_task:-unknown}"
     [[ -n "${WINDOWS_VM_TASK_EVENTS:-}" ]] && print -u2 'windows_task={"event":"cleanup","status":"unknown"}'
@@ -139,12 +160,10 @@ finish_with_cleanup() {
 
 on_signal() {
   local signal_exit=$1
-  stop_task_processes
-  if ! cleanup_guest_files; then
-    print -u2 -r -- "cleanup=unverified guest_task=${guest_task:-unknown}"
-  fi
-  exit "$signal_exit"
+  stop_task_processes || true
+  finish_with_cleanup "$signal_exit"
 }
+
 trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
 trap 'on_signal 129' HUP
@@ -199,6 +218,7 @@ if ! "$vmrun" copyFileFromHostToGuest "$runner_script" "$guest_runner"; then
   finish_with_cleanup 71
 fi
 
+task_launched=1
 if ! "$vmrun" runProgramInGuest \
   -noWait -interactive \
   'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' \
@@ -210,6 +230,7 @@ if ! "$vmrun" runProgramInGuest \
   -StdoutPath "$guest_stdout" \
   -StderrPath "$guest_stderr"; then
   print -u2 'interactive_launch=failed'
+  stop_task_processes || true
   finish_with_cleanup 75
 fi
 
@@ -231,17 +252,17 @@ done
 if (( ! result_ready )); then
   if ! "$vmrun" listProcessesInGuest >/dev/null 2>&1; then
     print -u2 'guest_operations=lost-during-wait'
-    stop_task_processes
+    stop_task_processes || true
     finish_with_cleanup 71
   fi
   print -u2 -r -- "interactive_timeout=${timeout_seconds}s"
-  stop_task_processes
+  stop_task_processes || true
   finish_with_cleanup 124
 fi
 
 if ! "$vmrun" copyFileFromGuestToHost "$guest_result" "$result_path"; then
   print -u2 'guest_operations=copy-result-failed'
-  stop_task_processes
+  stop_task_processes || true
   finish_with_cleanup 71
 fi
 

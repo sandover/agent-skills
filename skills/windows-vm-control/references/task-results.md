@@ -19,7 +19,7 @@ Each directory contains raw stdout/stderr and `result.json` with:
 - Recorded Windows process identities and temporary paths, when available.
 - Evidence locations and the next useful check.
 
-Success describes the helper’s result; inspect evidence for the requested outcome. Cleanup does not mean intentionally launched background applications ended. Task completion and temporary-file cleanup are reported independently; a cleanup failure does not erase an observed task exit.
+Helper success is not proof of the requested outcome; inspect the evidence. Task completion, temporary-file cleanup, and the lifetime of intentionally launched applications are separate facts. A cleanup failure does not erase an observed task exit.
 
 `status` checks the host runner's process identity. `--probe` additionally checks recorded Windows PIDs and creation times through SSH, distinguishing running, missing, reused PID, wrong host, and unavailable observations. Transport failures return a `probe_error` in the JSON result. Neither retries nor terminates anything. Missing process evidence leaves completion unknown; an absent root does not establish that descendants stopped or effects were undone. Use the recorded identities and paths to reconcile partial effects before repeating a mutation.
 

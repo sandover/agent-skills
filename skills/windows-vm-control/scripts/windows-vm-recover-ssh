@@ -138,7 +138,10 @@ host_address=$(ipconfig getifaddr "$route_interface" 2>/dev/null) || {
 [[ "$host_address" == <->.<->.<->.<-> ]] || { print -u2 'Mac route returned an invalid IPv4 address'; exit 65; }
 
 host_temp=$(mktemp -d -t windows-vm-recover-ssh.XXXXXX) || { print -u2 'could not create host temporary directory'; exit 73; }
-trap 'rm -rf -- "$host_temp"' EXIT
+preserve_record=0
+stop_failed=0
+task_launched=0
+trap '(( preserve_record )) || rm -rf -- "$host_temp"' EXIT
 guest_seed=''
 guest_public_key=''
 guest_script=''
@@ -171,12 +174,18 @@ read_guest_pid() {
 }
 
 stop_guest_process() {
-  read_guest_pid || return 0
-  [[ "$guest_pid" == <-> ]] && "$vmrun" killProcessInGuest "$guest_pid" >/dev/null 2>&1 || true
+  (( task_launched )) || return 0
+  read_guest_pid || { stop_failed=1; return 1; }
+  "$script_dir/windows-vm-stop-owned" --guest-ops "$host_temp/started.json" >&2 || { stop_failed=1; return 1; }
 }
 
 finish_with_cleanup() {
   local requested_exit=$1
+  if (( stop_failed )); then
+    preserve_record=1
+    print -u2 -r -- "task_stop=unverified record=$host_temp guest_started=${guest_started:-unknown}"
+    exit 76
+  fi
   if ! cleanup_guest_files; then
     print -u2 -r -- "cleanup=unverified guest_script=${guest_script:-unknown}"
     exit 76
@@ -186,10 +195,10 @@ finish_with_cleanup() {
 
 on_signal() {
   local signal_exit=$1
-  stop_guest_process
-  cleanup_guest_files || print -u2 -r -- "cleanup=unverified guest_script=${guest_script:-unknown}"
-  exit "$signal_exit"
+  stop_guest_process || true
+  finish_with_cleanup "$signal_exit"
 }
+
 trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
 trap 'on_signal 129' HUP
@@ -215,6 +224,7 @@ if ! "$vmrun" copyFileFromHostToGuest "$restore_script" "$guest_script"; then
   print -u2 'guest_operations=copy-script-failed'
   finish_with_cleanup 71
 fi
+task_launched=1
 if ! "$vmrun" runProgramInGuest -noWait \
   'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' \
   -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
@@ -225,6 +235,7 @@ if ! "$vmrun" runProgramInGuest -noWait \
   -StartedPath "$guest_started" \
   -ResultPath "$guest_result_path"; then
   print -u2 'guest_operations=launch-failed'
+  stop_guest_process || true
   finish_with_cleanup 71
 fi
 
@@ -240,14 +251,14 @@ done
 
 if (( ! result_ready )); then
   print -u2 -r -- "recovery_timeout=${timeout_seconds}s"
-  stop_guest_process
+  stop_guest_process || true
   finish_with_cleanup 124
 fi
 
 host_result="$host_temp/result.json"
 if ! "$vmrun" copyFileFromGuestToHost "$guest_result_path" "$host_result"; then
   print -u2 'guest_operations=copy-result-failed'
-  stop_guest_process
+  stop_guest_process || true
   finish_with_cleanup 71
 fi
 

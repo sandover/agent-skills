@@ -43,10 +43,48 @@ run_capture_with_input() {
   fi
 }
 
+write_stop_stub() {
+  local target=$1
+  cat > "$target" <<'STUB'
+#!/bin/zsh
+print -r -- "$*" >> "$TEST_STOP_LOG"
+identity_path=${argv[-1]:-}
+if [[ -z "$identity_path" || ! -f "$identity_path" ]]; then
+  print -u2 'stop_identity=missing'
+  exit 76
+fi
+python3 - "$identity_path" "$TEST_STOP_IDENTITIES" <<'PY'
+import json, sys
+from pathlib import Path
+try:
+    value = json.loads(Path(sys.argv[1]).read_text())
+    if (not isinstance(value, dict) or type(value.get('pid')) is not int or value['pid'] <= 0
+            or not isinstance(value.get('created'), str) or not value['created']
+            or not isinstance(value.get('computer'), str) or not value['computer']):
+        raise ValueError('incomplete process identity')
+except Exception as error:
+    print('stop_identity=invalid: ' + str(error), file=sys.stderr)
+    raise SystemExit(76)
+with open(sys.argv[2], 'a') as log:
+    log.write(json.dumps(value, separators=(',', ':')) + '\n')
+PY
+if [[ "$?" != 0 ]]; then
+  exit 76
+fi
+if [[ "${TEST_STOP_MODE:-success}" != success ]]; then
+  print -u2 'stop_status=unknown'
+  exit 76
+fi
+exit 0
+STUB
+  chmod +x "$target"
+}
+
 status_dir="$temp_dir/status"
 mkdir -p "$status_dir/bin" "$status_dir/stub"
 cp "$skill_dir/scripts/windows-vm-status" "$status_dir/bin/"
 cp "$skill_dir/scripts/guest-probe.ps1" "$status_dir/bin/"
+cp "$skill_dir/scripts/codex-policy.ps1" "$status_dir/bin/"
 
 cat > "$status_dir/stub/ssh" <<'STUB'
 #!/bin/zsh
@@ -87,6 +125,20 @@ TEST_SSH_LOG="$temp_dir/ssh.log" PATH="$status_dir/stub:$PATH" \
   run_capture 1 "$status_dir/bin/windows-vm-status" --require codex --wait 5
 [[ "$(wc -l < "$temp_dir/ssh.log" | tr -d '[:space:]')" == 1 ]] || fail 'policy mismatch was retried'
 rg -q '^codex_policy=mismatch$' "$temp_dir/out" || fail 'policy mismatch was not reported'
+# The live transport must fit cmd.exe and recover the exact shared PowerShell source.
+python3 - "$temp_dir/ssh.log" "$skill_dir/scripts" <<'PY_PROBE'
+import base64, gzip, re, sys
+from pathlib import Path
+command = Path(sys.argv[1]).read_text().strip()
+assert len(command) < 8191, 'readiness command exceeds Windows cmd.exe limit'
+encoded = command.split('-EncodedCommand ', 1)[1]
+decoder = base64.b64decode(encoded).decode('utf-16le')
+payload = re.search(r"FromBase64String\('([^']+)'\)", decoder).group(1)
+source = gzip.decompress(base64.b64decode(payload)).decode('utf-8')
+for name in ('codex-policy.ps1', 'guest-probe.ps1'):
+    assert Path(sys.argv[2], name).read_text() in source, 'probe source changed in transfer'
+PY_PROBE
+
 
 : > "$temp_dir/ssh.log"
 TEST_STATUS_MODE=probe-failed TEST_SSH_LOG="$temp_dir/ssh.log" PATH="$status_dir/stub:$PATH" \
@@ -103,6 +155,7 @@ interactive_dir="$temp_dir/interactive"
 mkdir -p "$interactive_dir"
 cp "$skill_dir/scripts/windows-vm-interactive-run" "$interactive_dir/"
 cp "$skill_dir/scripts/interactive-runner.ps1" "$interactive_dir/"
+write_stop_stub "$interactive_dir/windows-vm-stop-owned"
 cat > "$interactive_dir/windows-vmrun" <<'STUB'
 #!/bin/zsh
 print -r -- "$*" >> "$TEST_INTERACTIVE_LOG"
@@ -147,14 +200,12 @@ case "$command_name" in
     guest_path=${1:-}
     host_path=${2:-}
     if [[ "$guest_path" == *.started.json ]]; then
-      print -r -- '{"runner_pid":111,"child_pid":222}' > "$host_path"
+      print -r -- '{"runner_pid":111,"child_pid":222,"runner_created":"2026-09-24T10:00:00.0000000Z","created":"2026-09-24T10:01:00.0000000Z","computer":"TEST-WIN"}' > "$host_path"
     elif [[ "$TEST_INTERACTIVE_MODE" == task-failure ]]; then
       print -r -- '{"status":"error","exit_code":9,"message":"failed"}' > "$host_path"
     else
       print -r -- '{"status":"ok","exit_code":0,"output":"done"}' > "$host_path"
     fi
-    ;;
-  killProcessInGuest)
     ;;
   deleteFileInGuest)
     [[ "$TEST_INTERACTIVE_MODE" != cleanup-failure ]]
@@ -190,12 +241,35 @@ rg -q 'interactive_desktop=missing' "$temp_dir/err" || fail 'missing desktop was
 rg -q 'copyFileFromHostToGuest' "$temp_dir/interactive.log" && fail 'missing desktop still copied task files'
 
 : > "$temp_dir/interactive.log"
+TEST_STOP_MODE=success TEST_STOP_LOG="$temp_dir/stop.log" TEST_STOP_IDENTITIES="$temp_dir/stop-identities.jsonl" \
 TEST_INTERACTIVE_MODE=timeout TEST_INTERACTIVE_LOG="$temp_dir/interactive.log" \
   run_capture 124 "$interactive_dir/windows-vm-interactive-run" --timeout 1 \
   --result "$temp_dir/interactive-timeout.json" "$payload_dir/small.ps1"
-rg -q 'killProcessInGuest 222' "$temp_dir/interactive.log" || fail 'interactive timeout did not stop the child process'
-rg -q 'killProcessInGuest 111' "$temp_dir/interactive.log" || fail 'interactive timeout did not stop the runner process'
+rg -Fq '{"pid":111,"created":"2026-09-24T10:00:00.0000000Z","computer":"TEST-WIN"}' "$temp_dir/stop-identities.jsonl" || fail 'interactive timeout did not pass the full runner identity to stop-owned'
 rg -q 'interactive_timeout=1s' "$temp_dir/err" || fail 'interactive timeout was not reported'
+
+: > "$temp_dir/stop.log"
+: > "$temp_dir/stop-identities.jsonl"
+TEST_INTERACTIVE_MODE=launch-failure TEST_INTERACTIVE_LOG="$temp_dir/interactive.log" \
+  run_capture 76 "$interactive_dir/windows-vm-interactive-run" --timeout 2 \
+  --result "$temp_dir/interactive-launch-failure.json" "$payload_dir/small.ps1"
+rg -q 'task_stop=unverified' "$temp_dir/err" || fail 'interactive launch without a start record was not reported as uncertain'
+rg -q 'cleanup=confirmed' "$temp_dir/err" && fail 'interactive missing identity was reported as confirmed cleanup'
+rg -q 'windows_task=.*"status":"confirmed"' "$temp_dir/err" && fail 'interactive missing identity emitted a confirmed task event'
+record_path=$(sed -n 's/.*record=\([^ ]*\).*/\1/p' "$temp_dir/err" | head -n 1)
+[[ -n "$record_path" && -d "$record_path" ]] || fail 'interactive missing identity did not preserve its recovery record'
+[[ ! -s "$temp_dir/stop-identities.jsonl" ]] || fail 'interactive missing start record was sent to stop-owned'
+
+: > "$temp_dir/stop.log"
+: > "$temp_dir/stop-identities.jsonl"
+TEST_STOP_MODE=mismatch TEST_STOP_LOG="$temp_dir/stop.log" TEST_STOP_IDENTITIES="$temp_dir/stop-identities.jsonl" \
+TEST_INTERACTIVE_MODE=timeout TEST_INTERACTIVE_LOG="$temp_dir/interactive.log" \
+  run_capture 76 "$interactive_dir/windows-vm-interactive-run" --timeout 1 \
+  --result "$temp_dir/interactive-unverified.json" "$payload_dir/small.ps1"
+rg -q 'task_stop=unverified' "$temp_dir/err" || fail 'interactive identity mismatch did not preserve exit 76'
+rg -q 'cleanup=confirmed' "$temp_dir/err" && fail 'interactive identity mismatch was reported as confirmed cleanup'
+rg -q 'windows_task=.*"status":"confirmed"' "$temp_dir/err" && fail 'interactive identity mismatch emitted a confirmed task event'
+rg -Fq '{"pid":111,"created":"2026-09-24T10:00:00.0000000Z","computer":"TEST-WIN"}' "$temp_dir/stop-identities.jsonl" || fail 'interactive mismatch check did not receive the full identity'
 
 : > "$temp_dir/interactive.log"
 TEST_INTERACTIVE_MODE=guest-ops-failure TEST_INTERACTIVE_LOG="$temp_dir/interactive.log" \
@@ -209,7 +283,7 @@ TEST_INTERACTIVE_MODE=guest-ops-lost TEST_INTERACTIVE_LOG="$temp_dir/interactive
   run_capture 76 "$interactive_dir/windows-vm-interactive-run" --timeout 1 \
   --result "$temp_dir/interactive-lost.json" "$payload_dir/small.ps1"
 rg -q 'guest_operations=lost-during-wait' "$temp_dir/err" || fail 'lost Guest Operations was not reported'
-rg -q 'cleanup=unverified' "$temp_dir/err" || fail 'lost Guest Operations did not report unverified cleanup'
+rg -q '(cleanup|task_stop)=unverified' "$temp_dir/err" || fail 'lost Guest Operations did not report unknown cleanup or stop state'
 
 : > "$temp_dir/interactive.log"
 TEST_INTERACTIVE_MODE=cleanup-failure TEST_INTERACTIVE_LOG="$temp_dir/interactive.log" \
@@ -221,6 +295,7 @@ recovery_dir="$temp_dir/recovery"
 mkdir -p "$recovery_dir/stub"
 cp "$skill_dir/scripts/windows-vm-recover-ssh" "$recovery_dir/"
 cp "$skill_dir/scripts/restore-openssh.ps1" "$recovery_dir/"
+write_stop_stub "$recovery_dir/windows-vm-stop-owned"
 cat > "$recovery_dir/windows-vm-status" <<'STUB'
 #!/bin/zsh
 if [[ "$TEST_RECOVERY_MODE" == not-needed || -e "$TEST_RECOVERY_LAUNCHED" ]]; then
@@ -249,6 +324,7 @@ case "$command_name" in
   copyFileFromHostToGuest)
     ;;
   runProgramInGuest)
+    [[ "$TEST_RECOVERY_MODE" != launch-failure ]] || exit 1
     print launched > "$TEST_RECOVERY_LAUNCHED"
     ;;
   fileExistsInGuest)
@@ -256,7 +332,7 @@ case "$command_name" in
     if [[ "$guest_path" == *.result.json ]]; then
       [[ "$TEST_RECOVERY_MODE" != timeout ]]
     elif [[ "$guest_path" == *.started.json ]]; then
-      return 0
+      [[ "$TEST_RECOVERY_MODE" != launch-failure ]]
     else
       return 0
     fi
@@ -265,14 +341,14 @@ case "$command_name" in
     guest_path=${1:-}
     host_path=${2:-}
     if [[ "$guest_path" == *.started.json ]]; then
-      print '{"pid":333}' > "$host_path"
+      print '{"pid":333,"created":"2026-09-24T10:02:00.0000000Z","computer":"TEST-WIN"}' > "$host_path"
     elif [[ "$TEST_RECOVERY_MODE" == administrator-required ]]; then
       print '{"status":"error","code":"administrator_required","message":"administrator required"}' > "$host_path"
     else
       print '{"status":"ok","user":"agent","host_key_fingerprint":"256 SHA256:test TEST-WIN (ED25519)"}' > "$host_path"
     fi
     ;;
-  listProcessesInGuest|killProcessInGuest)
+  listProcessesInGuest)
     ;;
   deleteFileInGuest)
     [[ "$TEST_RECOVERY_MODE" != cleanup-failure ]]
@@ -355,13 +431,44 @@ rg -q 'administrator_required' "$temp_dir/out" || fail 'administrator requiremen
 
 : > "$temp_dir/recovery.log"
 rm -f "$temp_dir/recovery-launched"
+TEST_STOP_MODE=success TEST_STOP_LOG="$temp_dir/stop.log" TEST_STOP_IDENTITIES="$temp_dir/stop-identities.jsonl" \
 TEST_RECOVERY_MODE=timeout TEST_RECOVERY_LOG="$temp_dir/recovery.log" \
   TEST_RECOVERY_LAUNCHED="$temp_dir/recovery-launched" \
   TEST_RECOVERY_IDENTITY="$recovery_dir/windows-vm" \
   WINDOWS_VM_SSH_ALIAS=windows-vm \
   PATH="$recovery_dir/stub:$PATH" \
   run_capture 124 "$recovery_dir/windows-vm-recover-ssh" --timeout 1
-rg -q 'killProcessInGuest 333' "$temp_dir/recovery.log" || fail 'recovery timeout did not stop its guest process'
+rg -Fq '{"pid":333,"created":"2026-09-24T10:02:00.0000000Z","computer":"TEST-WIN"}' "$temp_dir/stop-identities.jsonl" || fail 'recovery timeout did not pass the full guest identity to stop-owned'
+
+: > "$temp_dir/stop.log"
+: > "$temp_dir/stop-identities.jsonl"
+rm -f "$temp_dir/recovery-launched"
+TEST_RECOVERY_MODE=launch-failure TEST_RECOVERY_LOG="$temp_dir/recovery.log" \
+  TEST_RECOVERY_LAUNCHED="$temp_dir/recovery-launched" \
+  TEST_RECOVERY_IDENTITY="$recovery_dir/windows-vm" \
+  WINDOWS_VM_SSH_ALIAS=windows-vm \
+  PATH="$recovery_dir/stub:$PATH" \
+  run_capture 76 "$recovery_dir/windows-vm-recover-ssh" --timeout 2
+rg -q 'task_stop=unverified' "$temp_dir/err" || fail 'recovery launch without a start record was not reported as uncertain'
+rg -q 'cleanup=confirmed' "$temp_dir/err" && fail 'recovery missing identity was reported as confirmed cleanup'
+rg -q 'windows_task=.*"status":"confirmed"' "$temp_dir/err" && fail 'recovery missing identity emitted a confirmed task event'
+record_path=$(sed -n 's/.*record=\([^ ]*\).*/\1/p' "$temp_dir/err" | head -n 1)
+[[ -n "$record_path" && -d "$record_path" ]] || fail 'recovery missing identity did not preserve its recovery record'
+[[ ! -s "$temp_dir/stop-identities.jsonl" ]] || fail 'recovery missing start record was sent to stop-owned'
+
+: > "$temp_dir/stop.log"
+: > "$temp_dir/stop-identities.jsonl"
+rm -f "$temp_dir/recovery-launched"
+TEST_STOP_MODE=mismatch TEST_STOP_LOG="$temp_dir/stop.log" TEST_STOP_IDENTITIES="$temp_dir/stop-identities.jsonl" \
+  TEST_RECOVERY_MODE=timeout TEST_RECOVERY_LOG="$temp_dir/recovery.log" \
+  TEST_RECOVERY_LAUNCHED="$temp_dir/recovery-launched" \
+  TEST_RECOVERY_IDENTITY="$recovery_dir/windows-vm" \
+  WINDOWS_VM_SSH_ALIAS=windows-vm \
+  PATH="$recovery_dir/stub:$PATH" \
+  run_capture 76 "$recovery_dir/windows-vm-recover-ssh" --timeout 1
+rg -q 'task_stop=unverified' "$temp_dir/err" || fail 'recovery identity mismatch did not preserve exit 76'
+rg -q 'cleanup=confirmed' "$temp_dir/err" && fail 'recovery identity mismatch was reported as confirmed cleanup'
+rg -q 'windows_task=.*"status":"confirmed"' "$temp_dir/err" && fail 'recovery identity mismatch emitted a confirmed task event'
 
 : > "$temp_dir/recovery.log"
 rm -f "$temp_dir/recovery-launched"
@@ -376,6 +483,7 @@ rg -q 'cleanup=unverified' "$temp_dir/err" || fail 'recovery cleanup failure was
 runner_dir="$temp_dir/runner"
 mkdir -p "$runner_dir/stub"
 cp "$skill_dir/scripts/windows-codex-run" "$runner_dir/"
+cp "$skill_dir/scripts/codex-policy.ps1" "$runner_dir/"
 cat > "$runner_dir/windows-vm-status" <<'STUB'
 #!/bin/zsh
 print -r -- 'ssh=ok'
@@ -387,6 +495,7 @@ STUB
 cat > "$runner_dir/windows-vm-powershell" <<'STUB'
 #!/bin/zsh
 print -u2 'guest_runner_pid=4321'
+print -u2 -r -- 'guest_runner_identity={"pid":4321,"created":"2026-09-24T10:03:00.0000000Z","computer":"TEST-WIN"}'
 case "$TEST_RUNNER_MODE" in
   prompt)
     IFS= read -r prompt || true
@@ -407,14 +516,9 @@ case "$TEST_RUNNER_MODE" in
     ;;
 esac
 STUB
-cat > "$runner_dir/stub/ssh" <<'STUB'
-#!/bin/zsh
-print -r -- "$*" >> "$TEST_CLEANUP_LOG"
-exit 0
-STUB
-chmod +x "$runner_dir/windows-vm-status" "$runner_dir/windows-vm-powershell" "$runner_dir/stub/ssh"
+write_stop_stub "$runner_dir/windows-vm-stop-owned"
+chmod +x "$runner_dir/windows-vm-status" "$runner_dir/windows-vm-powershell"
 
-: > "$temp_dir/cleanup.log"
 print -r -- 'preserve this prompt exactly' > "$temp_dir/prompt.txt"
 mkdir "$runner_dir/no-jq"
 ln -s /bin/cat "$runner_dir/no-jq/cat"
@@ -426,27 +530,42 @@ set -e
 [[ "$command_status" == 69 ]] || fail "missing jq returned $command_status instead of 69"
 rg -q 'jq is required to classify Codex events' "$temp_dir/err" || fail 'missing jq was not reported'
 
-TEST_RUNNER_MODE=prompt TEST_PROMPT_LOG="$temp_dir/prompt.log" TEST_CLEANUP_LOG="$temp_dir/cleanup.log" PATH="$runner_dir/stub:$PATH" \
+TEST_RUNNER_MODE=prompt TEST_PROMPT_LOG="$temp_dir/prompt.log" PATH="$runner_dir/stub:$PATH" \
   run_capture_with_input 0 "$temp_dir/prompt.txt" "$runner_dir/windows-codex-run" --cwd 'C:\repo' --timeout 2
 [[ "$(<"$temp_dir/prompt.log")" == 'preserve this prompt exactly' ]] || fail 'runner did not preserve prompt stdin'
 
-: > "$temp_dir/cleanup.log"
-TEST_RUNNER_MODE=turn-failed TEST_CLEANUP_LOG="$temp_dir/cleanup.log" PATH="$runner_dir/stub:$PATH" \
+TEST_RUNNER_MODE=turn-failed PATH="$runner_dir/stub:$PATH" \
   run_capture_with_input 75 "$temp_dir/prompt.txt" "$runner_dir/windows-codex-run" --cwd 'C:\repo' --timeout 2
 rg -q 'codex=turn-failed' "$temp_dir/err" || fail 'turn.failed event was not classified'
 
-: > "$temp_dir/cleanup.log"
-TEST_RUNNER_MODE=approval TEST_CLEANUP_LOG="$temp_dir/cleanup.log" PATH="$runner_dir/stub:$PATH" \
+: > "$temp_dir/stop.log"
+: > "$temp_dir/stop-identities.jsonl"
+TEST_STOP_MODE=success TEST_STOP_LOG="$temp_dir/stop.log" TEST_STOP_IDENTITIES="$temp_dir/stop-identities.jsonl" \
+TEST_RUNNER_MODE=approval PATH="$runner_dir/stub:$PATH" \
   run_capture_with_input 77 "$temp_dir/prompt.txt" "$runner_dir/windows-codex-run" --cwd 'C:\repo' --timeout 2
-rg -q 'taskkill.exe /PID 4321 /T /F' "$temp_dir/cleanup.log" || fail 'approval did not target the guest process tree'
-rg -q 'guest_cleanup=ok root_pid=4321' "$temp_dir/err" || fail 'approval cleanup was not reported'
+rg -q -- '^--ssh ' "$temp_dir/stop.log" || fail 'approval did not use the identity-safe SSH stop helper'
+rg -Fq '{"pid":4321,"created":"2026-09-24T10:03:00.0000000Z","computer":"TEST-WIN"}' "$temp_dir/stop-identities.jsonl" || fail 'approval cleanup omitted the full Windows process identity'
+rg -q 'guest_cleanup=ok' "$temp_dir/err" || fail 'approval cleanup was not reported'
 
-: > "$temp_dir/cleanup.log"
-TEST_RUNNER_MODE=timeout TEST_CLEANUP_LOG="$temp_dir/cleanup.log" PATH="$runner_dir/stub:$PATH" \
+: > "$temp_dir/stop.log"
+: > "$temp_dir/stop-identities.jsonl"
+TEST_STOP_MODE=success TEST_STOP_LOG="$temp_dir/stop.log" TEST_STOP_IDENTITIES="$temp_dir/stop-identities.jsonl" \
+TEST_RUNNER_MODE=timeout PATH="$runner_dir/stub:$PATH" \
   run_capture_with_input 124 "$temp_dir/prompt.txt" "$runner_dir/windows-codex-run" --cwd 'C:\repo' --timeout 1
-rg -q 'taskkill.exe /PID 4321 /T /F' "$temp_dir/cleanup.log" || fail 'timeout did not target the guest process tree'
+rg -q -- '^--ssh ' "$temp_dir/stop.log" || fail 'timeout did not use the identity-safe SSH stop helper'
+rg -Fq '{"pid":4321,"created":"2026-09-24T10:03:00.0000000Z","computer":"TEST-WIN"}' "$temp_dir/stop-identities.jsonl" || fail 'timeout cleanup omitted the full Windows process identity'
 rg -q 'codex_timeout=1s' "$temp_dir/err" || fail 'timeout was not reported'
 
+: > "$temp_dir/stop.log"
+: > "$temp_dir/stop-identities.jsonl"
+TEST_STOP_MODE=mismatch TEST_STOP_LOG="$temp_dir/stop.log" TEST_STOP_IDENTITIES="$temp_dir/stop-identities.jsonl" \
+TEST_RUNNER_MODE=timeout PATH="$runner_dir/stub:$PATH" \
+  run_capture_with_input 76 "$temp_dir/prompt.txt" "$runner_dir/windows-codex-run" --cwd 'C:\repo' --timeout 1
+rg -q 'guest_cleanup=unverified' "$temp_dir/err" || fail 'runner identity mismatch did not report unknown cleanup'
+rg -q 'guest_cleanup=ok' "$temp_dir/err" && fail 'runner identity mismatch was reported as confirmed cleanup'
+rg -Fq '{"pid":4321,"created":"2026-09-24T10:03:00.0000000Z","computer":"TEST-WIN"}' "$temp_dir/stop-identities.jsonl" || fail 'runner mismatch check did not receive the full identity'
+
+python3 "$skill_dir/tests/test_windows_stop_owned.py"
 uv run --script "$skill_dir/tests/test_windows_codex_session.py"
 
 python3 "$skill_dir/tests/test_windows_task.py"

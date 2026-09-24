@@ -108,10 +108,11 @@ valid_value "$working_directory" || { print -u2 '--cwd must be a non-empty singl
 prompt_text=$(<&0)
 [[ -n "$prompt_text" ]] || { print -u2 'prompt stdin is empty'; exit 64; }
 [[ -x "$status_script" ]] || { print -u2 -r -- "readiness helper is not executable: $status_script"; exit 69; }
+[[ -f "$script_dir/codex-policy.ps1" ]] || { print -u2 'Codex policy helper is missing'; exit 69; }
 [[ -x "$powershell_script" ]] || { print -u2 -r -- "PowerShell helper is not executable: $powershell_script"; exit 69; }
 command -v jq >/dev/null 2>&1 || { print -u2 'jq is required to classify Codex events'; exit 69; }
 
-status_output=$("$status_script" --ssh "$ssh_host" --require codex --wait "$readiness_wait_seconds" 2>&1)
+status_output=$("$status_script" --ssh "$ssh_host" --require codex --cwd "$working_directory" --wait "$readiness_wait_seconds" 2>&1)
 status_result=$?
 if (( status_result != 0 )); then
   print -u2 -r -- "$status_output"
@@ -199,39 +200,24 @@ mkfifo "$stdout_fifo" || { print -u2 'failed to create runner output pipe'; exit
 guest_active=0
 cleanup_failed=0
 
-guest_runner_pid() {
-  local pid_value
-  [[ -f "$stderr_file" ]] || return 1
-  pid_value=$(sed -n 's/^guest_runner_pid=\([0-9][0-9]*\)\r*$/\1/p' "$stderr_file" | tail -n 1)
-  [[ "$pid_value" == <-> && "$pid_value" != 0 ]] || return 1
-  print -r -- "$pid_value"
-}
-
 stop_guest_process_tree() {
-  local pid_value attempt result
-  pid_value=''
+  local attempt identity_json
+  identity_json=''
   for attempt in {1..20}; do
-    pid_value=$(guest_runner_pid 2>/dev/null) && break
+    identity_json=$(sed -n 's/^guest_runner_identity=//p' "$stderr_file" | tail -n 1)
+    [[ -n "$identity_json" ]] && break
     sleep 0.1
   done
-  if [[ -z "$pid_value" ]]; then
-    print -u2 'guest_cleanup=no-recorded-pid'
+  if [[ -z "$identity_json" ]]; then
+    print -u2 'guest_cleanup=no-recorded-identity'
     return 1
   fi
-  /usr/bin/perl -e 'alarm shift; exec @ARGV' 10 \
-    ssh \
-    -o BatchMode=yes \
-    -o ConnectTimeout=5 \
-    -o ConnectionAttempts=1 \
-    "$ssh_host" \
-    "C:\\Windows\\System32\\taskkill.exe /PID $pid_value /T /F" \
-    >/dev/null 2>&1
-  result=$?
-  if (( result != 0 )); then
-    print -u2 -r -- "guest_cleanup=failed root_pid=$pid_value"
+  print -r -- "$identity_json" > "$temp_dir/identity.json"
+  if ! "$script_dir/windows-vm-stop-owned" --ssh "$ssh_host" "$temp_dir/identity.json" >&2; then
+    print -u2 -r -- "guest_cleanup=unverified identity=$identity_json"
     return 1
   fi
-  print -u2 -r -- "guest_cleanup=ok root_pid=$pid_value"
+  print -u2 'guest_cleanup=ok'
   guest_active=0
   return 0
 }
@@ -239,6 +225,10 @@ stop_guest_process_tree() {
 cleanup() {
   if [[ -n "${helper_pid:-}" ]] && kill -0 "$helper_pid" 2>/dev/null; then
     stop_process_tree "$helper_pid"
+  fi
+  if (( cleanup_failed )); then
+    print -u2 -r -- "task_stop=unverified record=$temp_dir"
+    return
   fi
   rm -rf -- "$temp_dir"
 }
@@ -268,6 +258,7 @@ service_tier_ps=$(ps_quote "$service_tier")
   print -r -- "\$r = $reasoning_effort_ps"
   print -r -- "\$s = $service_tier_ps"
   print -r -- "\$n = $allow_non_git"
+  cat "$script_dir/codex-policy.ps1"
   print -r -- '
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
@@ -280,18 +271,17 @@ $v = $vo | Select-Object -First 1
 if ($vx -ne 0 -or !$v) { [Console]::Error.WriteLine("codex=version-check-failed"); exit 69 }
 $v = $v.ToString().Trim()
 [Console]::Error.WriteLine(("guest_runner_codex_version=" + $v))
-$qo = @(& $p doctor --json 2> $null)
-$qx = $LASTEXITCODE
-$q = $qo | Out-String
-try { $qd = ($q | ConvertFrom-Json).checks."sandbox.helpers".details } catch { $qd = $null }
-if ($qx -ne 0 -or $qd."approval policy" -ne "Never" -or $qd."filesystem sandbox" -ne "unrestricted" -or $qd."network sandbox" -ne "enabled") { [Console]::Error.WriteLine("authority=mismatch"); exit 72 }
+$policy = Get-CodexPolicyEvidence -CodexPath $p -WorkingDirectory $d
+Write-CodexPolicyEvidence $policy | ForEach-Object { [Console]::Error.WriteLine($_) }
+if ($policy.policy -ne "ok") { exit 72 }
+
 $a = @("exec", "--json", "--cd", $d)
 if ($n) { $a += "--skip-git-repo-check" }
 if ($m) { $a += @("--model", $m) }
 if ($r) { $a += @("-c", ("model_reasoning_effort=" + $r)) }
 if ($s) { $a += @("-c", ("service_tier=" + $s)) }
 $a += "-"
-try { [Console]::Error.WriteLine(("guest_runner_pid=" + $PID)); $prompt | & $p @a; $x = $LASTEXITCODE } catch { [Console]::Error.WriteLine("codex=process-error"); exit 75 }
+try { [Console]::Error.WriteLine(("guest_runner_identity=" + (@{pid=$PID; created=(Get-Process -Id $PID).StartTime.ToUniversalTime().ToString("o"); computer=$env:COMPUTERNAME} | ConvertTo-Json -Compress))); $prompt | & $p @a; $x = $LASTEXITCODE } catch { [Console]::Error.WriteLine("codex=process-error"); exit 75 }
 exit $x
 '
 } > "$remote_script"
@@ -365,6 +355,7 @@ if (( turn_failed != 0 )); then
 fi
 case "$helper_result" in
   0) exit 0 ;;
+  76) print -u2 'guest_outcome=unverified'; exit 76 ;;
   124) print -u2 -- "codex_timeout=${timeout_seconds}s"; exit 124 ;;
   72) print -u2 'authority=policy-check-failed'; exit 72 ;;
   69) print -u2 'codex=version-check-failed'; exit 70 ;;
