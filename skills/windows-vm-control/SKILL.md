@@ -1,46 +1,33 @@
 ---
 name: windows-vm-control
-description: Run commands, delegate development, and inspect or operate Windows desktop apps in the configured VMware Fusion VM from a Mac. Includes VM readiness and access recovery.
+description: Run commands, delegate development, and inspect or operate Windows desktop apps in the configured VMware Fusion VM from a Mac. Includes VM lifecycle and access recovery.
 ---
 
 # Windows VM Control
 
-Work on the configured Windows VM as a persistent computer with its own files, processes, accounts, and desktop. Use the user's existing authorization and execution preferences. An ordinary Windows task can include background use and making the configured VM available. Loading this skill alone does not authorize unrelated effects.
+Work on the configured Windows VM as a persistent computer with its own files, processes, accounts, and desktop. Follow the user's authorization and execution preferences. Loading this skill does not authorize unrelated effects.
 
-Run `scripts/...` from this skill directory, or use absolute paths. Host sandbox restrictions may require host access for Fusion, Keychain, and the private VM network; request that access for the specific operation when needed.
+Run `scripts/...` from this skill directory, or use absolute paths. Host sandbox restrictions may require host access for Fusion, Keychain, and the private VM network; request access for the specific operation when needed.
 
-## Choose the next action
+## Choose a route
 
-| Need | Default | Read when needed |
-| --- | --- | --- |
-| Run a known command or inspect a file/process | SSH for simple commands; PowerShell helper for scripts | [Command work](references/command-work.md) |
-| Diagnose, implement, or build with Windows-side judgment | One bounded Windows Codex assignment | [Command work](references/command-work.md#delegate-one-outcome) |
-| Steer the same assignment or handle interactive requests | Managed Windows Codex session | [Managed delegation](references/managed-delegation.md) |
-| Build or test an exact source revision | Fetch the revision and use an isolated guest worktree | [Source and builds](references/source-and-builds.md) |
-| Open a file or operate a dialog | Automate a known, bounded action; ask when identity or unresolved ambiguity requires assistance | [Desktop work](references/desktop-work.md) |
-| Repeat desktop actions or inspect controls | Existing app helper or bundled desktop commands | [Desktop work](references/desktop-work.md#inspect-the-windows-desktop) |
-| Establish visual appearance | Validated Fusion capture, with signed-in desktop fallback | [Desktop work](references/desktop-work.md#capture-or-send-input) |
-| Make Windows available | Check the required capability; start or resume only if needed | [VM lifecycle](references/lifecycle.md) |
-| Repair failed access | Diagnose the failed method before changing configuration | [Access recovery](references/access-recovery.md) |
+- **Commands:** Use SSH for simple commands and the PowerShell helper for scripts. Read [Command work](references/command-work.md). Use [task records](references/task-results.md) when output must survive an interrupted session or support follow-up.
+- **Delegate:** Give Windows Codex one bounded outcome when the work benefits from Windows-side judgment. Read [Command work](references/command-work.md); use [managed delegation](references/managed-delegation.md) when the assignment needs steering, user input, or orderly interruption. For exact revisions and architecture-specific builds, see [Source and builds](references/source-and-builds.md).
+- **Desktop:** Read [Desktop work](references/desktop-work.md) to inspect or operate signed-in Windows applications.
 
-These method choices are defaults. A user's choice of executor or workflow takes precedence. Use a working route immediately; a successful SSH command does not need a separate all-capabilities preflight. Delegation helpers perform their own readiness checks.
+Use the operation needed for the task as the live check. If it succeeds on the intended VM and account, continue without checking unrelated capabilities. Delegation runners check their own prerequisites; use [Access recovery](references/access-recovery.md) only when the needed route fails. Follow [VM lifecycle](references/lifecycle.md) to start or resume the VM when needed and to shut it down gracefully after the task when no other work owns it.
 
-Use the optional `windows-vm-task` wrapper when output must survive an interrupted session. It records results and provides a read-only status check. See [Task results and recovery](references/task-results.md).
+## Keep boundaries clear
 
-## Keep the boundaries clear
-
-- **Scope:** Preserve unrelated files and ongoing work. Verify the VM, account, and target paths before destructive or identity-sensitive actions. Changing VM/account, taking over another checkout, resetting or shutting down Windows, changing snapshots, or repairing access configuration needs authorization covering that effect. Do not ask again when it already exists.
-- **Identity:** The user enters passwords, PINs, passkeys, and MFA responses in identity prompts. Existing configured credentials may be used by the helpers; never copy secrets into prompts or logs. Approve UAC only for an authorized elevation with a verified program and action.
-- **Input:** Get consent before taking Mac focus or controlling the Mac pointer, unless already authorized. Guest-only automation can proceed without that consent when it leaves Mac input alone. Only one actor controls the Windows desktop at a time.
-- **Ownership:** Once delegated, Windows Codex owns changes to its checkout and processes. The Mac coordinates and supplies requested host support. Do not run a competing implementation, build, or desktop driver. End or interrupt the active work and reconcile its state before taking over.
+- **Scope:** Preserve unrelated files and ongoing work. Verify the computer, account, and target paths before destructive or identity-sensitive actions. Follow the lifecycle procedure for start, resume, and task-end shutdown. Changing accounts, taking over another checkout, resetting Windows, changing snapshots, or repairing access configuration requires authorization for that effect.
+- **Identity:** The user enters passwords, PINs, passkeys, and MFA responses in identity prompts. Configured credentials may enable helpers; never copy secrets into prompts or logs. Approve UAC only for an authorized elevation with a verified program and action.
+- **Input and ownership:** Get consent before taking Mac focus or controlling the Mac pointer, unless already authorized. Guest-only automation may proceed when it leaves Mac input alone. Choose one executor for guest changes and one driver for desktop input; after delegation, do not start competing work until the assignment ends or its state is reconciled.
 - **Uncertain completion:** After a timeout or lost connection, inspect what ran and changed before repeating a mutation. Stop only task-owned processes; never kill every Codex, PowerShell, or Acrobat process as cleanup.
 
 ## Use evidence that answers the question
 
-The access methods are independent. SSH proves command execution in its account; Tools enables Guest Operations; an interactive launch reaches the signed-in desktop; a Fusion capture shows the screen Fusion displays. An unknown Tools or VM field does not invalidate a successful SSH result. A failed access method does not establish that Windows is powered off.
+Access methods are independent: SSH proves command execution in its account; Tools enables Guest Operations; an interactive launch reaches the signed-in desktop; a Fusion capture shows the screen Fusion displays. A working route is enough for work it can complete. A failed route does not prove Windows is powered off.
 
-For a build, retain the command result and artifact identity. For installation, check the installed artifact. For visible behavior, observe the application. Reuse evidence that already supports the claim; add a check only for a remaining gap. A guest's final report is useful when backed by its recorded commands and results. Protocol completion establishes that the agent stopped, not that the product works.
+For a build, retain the command result and artifact identity. For installation, check the installed artifact. For visible behavior, observe the application. Reuse evidence that still supports the claim and add a check only for a remaining gap. A guest's report is useful when backed by recorded commands and results; protocol completion proves only that the agent stopped.
 
-Automate known, bounded UI actions. For unfamiliar UI, make a narrow inspection and continue when the target and effect are clear. Ask for user assistance when identity, unresolved ambiguity, or substantial discovery makes it worthwhile; account for any explicit user preference for unattended work. When handing over, stop automated input, give the exact step and state to leave behind, then verify the result.
-
-Finish by stating the result, the relevant proof, and any remaining limitation. Leave the VM running unless the user requested otherwise. Remove temporary files and processes created for this task when they are no longer needed.
+Finish by stating the result, relevant proof, and any remaining limitation.

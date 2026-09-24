@@ -154,6 +154,8 @@ class WindowsCodexController:
                 self.args.ssh,
                 "--require",
                 "codex",
+                "--cwd",
+                self.args.cwd,
                 "--wait",
                 str(self.args.readiness_wait),
             ],
@@ -169,7 +171,7 @@ class WindowsCodexController:
             if separator:
                 values[key] = value
         if result.returncode != 0:
-            detail = values.get("codex", values.get("ssh", "failed"))
+            detail = values.get("codex_policy_reason") or values.get("codex", values.get("ssh", "failed"))
             raise ControllerFailure(f"Windows Codex is not ready: {detail}", 70)
         codex_path = values.get("codex_path", "")
         if not codex_path or codex_path in {"not_found", "not_checked"}:

@@ -8,29 +8,23 @@ Prefer the repository's existing remote when it already contains the revision. F
 
 When the revision exists only on the Mac, use a bundle with a named ref. Do not push solely to transfer source. The example below creates a task-owned temporary bare repository so the source checkout needs no temporary branch.
 
-Fill in an observed source repository, full candidate SHA, and full base SHA known to exist in the guest repository. The base must be an ancestor of the candidate. Run on the Mac:
+Fill in an observed local source repository, full candidate SHA, and full base SHA known to exist in the guest repository. The base must be an ancestor of the candidate. Run this host-only helper on the Mac:
 
 ```bash
 source_repo='/absolute/host/project'
 candidate='FULL_CANDIDATE_SHA'
 guest_base='FULL_GUEST_BASE_SHA'
-transfer_dir=$(mktemp -d /private/tmp/windows-source.XXXXXX)
-git init --bare "$transfer_dir/export.git"
-git -C "$transfer_dir/export.git" fetch --no-tags "$source_repo" "$candidate"
-git -C "$transfer_dir/export.git" update-ref refs/heads/candidate FETCH_HEAD
-git -C "$transfer_dir/export.git" merge-base --is-ancestor "$guest_base" refs/heads/candidate
-# Continue only if the ancestry check succeeded.
-git -C "$transfer_dir/export.git" bundle create "$transfer_dir/candidate.bundle" \
-  refs/heads/candidate "^$guest_base"
-git -C "$transfer_dir/export.git" bundle list-heads "$transfer_dir/candidate.bundle"
+bundle_info=$(scripts/windows-vm-source-bundle "$source_repo" "$candidate" "$guest_base")
+printf '%s\n' "$bundle_info"
 ```
 
-Check each command's exit status. If candidate equals base, the guest already has the revision and needs no bundle. The output must advertise the intended full SHA under `refs/heads/candidate`. A bundle needs a named positive ref; an arbitrary SHA range can produce an empty bundle. Fetch the advertised ref on Windows, not a guessed intermediate SHA.
+The helper verifies both full IDs name commits, confirms the guest base is an ancestor, and creates a bundle in a unique task-owned temporary directory with a temporary bare repository. It reads Git objects from the source repository and does not read or change working-tree files. It checks every Git command and verifies that the bundle advertises exactly the candidate SHA under `refs/heads/candidate`. Its JSON output includes `bundle_path`, `advertised_ref`, `candidate_sha`, and `guest_base_sha`. If candidate equals base, it reports `status: already_present` and returns no bundle; skip the transfer and use the exact candidate already in the guest.
 
-Transfer to a unique guest filename and record the returned directory for the handoff:
+When the helper reports `bundle_created`, transfer its bundle to a unique guest filename and record the host path for the handoff:
 
 ```bash
-scp "$transfer_dir/candidate.bundle" "windows-vm:$(basename "$transfer_dir").bundle"
+bundle_path=$(printf '%s\n' "$bundle_info" | python3 -c 'import json,sys; print(json.load(sys.stdin)["bundle_path"])')
+scp "$bundle_path" "windows-vm:$(basename "$(dirname "$bundle_path")").bundle"
 ```
 
 This relative SCP destination is in the SSH account's home. Resolve its absolute Windows path rather than assuming a username. With the correct paths, run the following through the PowerShell helper or give it to the guest executor:

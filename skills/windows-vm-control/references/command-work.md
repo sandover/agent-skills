@@ -28,7 +28,7 @@ scripts/windows-vm-powershell --timeout 30 /private/tmp/windows-check.ps1
 
 The helper accepts UTF-8 with or without a BOM, normalizes the transferred script, and uses the same execution path for every size. It sets UTF-8 standard streams and uses process-only `ExecutionPolicy Bypass`; it does not change machine policy. Output streams remain live and explicit exit codes are preserved. Read raw caller stdin with `[Console]::In.ReadToEnd()`; `$input` represents a PowerShell pipeline, not the process input stream.
 
-A Windows job supervises the script and its descendants. `--timeout` bounds execution after launch; a confirmed timeout reports `task_timeout=stopped` on stderr and returns `124`. Scripts can also explicitly return `124` or `76`, so an exit code alone does not identify a timeout or transport failure. Use the diagnostics or the [task record](task-results.md) to distinguish task completion, timeout, and cleanup. Transfer and startup have separate bounds. Transport loss or host interruption returns an unverified result (`76`); the guest deadline still applies. Normal successful completion permits intentionally launched background processes to remain. Temporary guest scripts are removed; cleanup failure returns `76` and names them.
+A Windows job supervises the script and its descendants. `--timeout` bounds execution after launch; a confirmed timeout reports `task_timeout=stopped` on stderr and returns `124`. Scripts can also explicitly return `124` or `76`, so an exit code alone does not identify a timeout or transport failure. Use diagnostics or the [task record](task-results.md) to distinguish task completion, timeout, and cleanup. Transfer and startup have separate bounds. Transport loss or host interruption returns an unverified result (`76`); the guest deadline still applies. A successful script can leave intentionally launched background applications running; account for them when following [VM lifecycle](lifecycle.md) at task end. Temporary guest scripts are removed; cleanup failure returns `76` and names them.
 
 `$ErrorActionPreference = 'Stop'` handles PowerShell errors. Check `$LASTEXITCODE` explicitly after native commands:
 
@@ -41,7 +41,7 @@ An SSH process can have a different environment from an interactive terminal. Se
 
 ## Delegate one outcome
 
-Write a UTF-8 handoff file. Include the facts the guest needs to make decisions: outcome, exact checkout/revision, allowed effects, unrelated work to preserve, and evidence to return. Keep project-specific build and QA instructions in the project.
+Write a UTF-8 handoff file with the outcome, exact checkout or revision, allowed effects, unrelated work to preserve, and evidence to return. Keep project-specific build and QA instructions in the project. For an exact revision or architecture-specific build, follow [Source and builds](source-and-builds.md) and include its requirements in the handoff.
 
 Example handoff, with paths and revision filled from current evidence:
 
@@ -64,9 +64,9 @@ scripts/windows-codex-run \
 
 Keep the runner in an execution session you can poll or interrupt. Retain stdout (JSONL events) and stderr (readiness, process, and cleanup information) when needed for follow-up. Poll at meaningful intervals and keep the user informed during long builds.
 
-The runner waits for readiness, locates Codex, and checks its active policy before launching. `--readiness-wait` controls this separate startup allowance; `--timeout` bounds the assignment. Use `--allow-non-git` only for an intentional non-checkout directory. Preserve the configured model and reasoning unless an authorized task choice requires an override.
+The runner locates Codex, waits for it to become ready, and checks its active policy before launching. It owns these startup checks; do not add a separate all-capability preflight. `--readiness-wait` controls startup allowance, while `--timeout` bounds the assignment. Use `--allow-non-git` only for an intentional non-checkout directory. Preserve the configured model and reasoning unless an authorized task choice requires an override.
 
-The bundled runners currently require the approved VM profile: `approval_policy = "never"` and `sandbox_mode = "danger-full-access"`. A mismatch stops the runner. This is a local runner requirement, not a reason to weaken an arbitrary machine's settings. Report the mismatch and use an already-authorized direct route if suitable; do not override the policy on the command line or silently rewrite configuration.
+The bundled runners currently require the approved VM profile: `approval_policy = "never"` and `sandbox_mode = "danger-full-access"`. The shared check reads the sandbox diagnostic in the requested working directory and reports the observed approval, filesystem, and network fields. `mismatch` means complete, readable fields differ from this profile; `failed` means the sandbox check could not establish them. Both stop the runner, with `codex_policy_reason` and `codex_doctor_exit` explaining why. A healthy sandbox check remains usable when an unrelated doctor check makes the overall exit nonzero. This is a local runner requirement, not a reason to weaken an arbitrary machine's settings. Report the mismatch and use an already-authorized direct route if suitable; do not override the policy on the command line or silently rewrite configuration.
 
 | Exit | What to do |
 | --- | --- |

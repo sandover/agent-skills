@@ -1,10 +1,10 @@
 # Desktop work
 
-Automate known, bounded actions using an existing project helper or the bundled commands below. For unfamiliar UI, inspect the relevant window and controls; continue if the intended target and effect become clear. Ask for assistance for identity prompts, unresolved ambiguity, or when further discovery would cost substantially more than the user’s step. Weigh interruption cost and an explicit preference for unattended work; a short human action alone is not a reason to stop automation.
+Use an existing project helper or the bundled commands for known, bounded actions. For unfamiliar UI, inspect the relevant window and controls; continue when the target and effect are clear. Hand off identity prompts or unresolved ambiguity, and weigh further discovery against the user's effort and any preference for unattended work. A short human action alone is not a reason to stop a self-contained workflow.
 
 ## Hand a step to the user
 
-Stop the current desktop driver and confirm it stopped. Give the application, exact action, and state to leave behind, for example:
+Stop the current desktop driver and confirm it stopped before handing control to the user. Name the application, exact action, and state to leave behind, for example:
 
 > In Windows Acrobat, open any PDF through the Box sidebar. Leave it open without saving or registering it, then tell me when it is ready.
 
@@ -29,7 +29,7 @@ Replace example identifiers with current inspection results. `--name` is an exac
 
 Output is the interactive runner JSON envelope; its `output` contains `{items, truncated}` for inspection, or the JSON array of dispatched actions. Inspection returns at most 100 rows by default; `--limit` accepts 1–500. If truncated, narrow with `--automation-id` or `--name`, or raise the limit. The cap never limits the uniqueness check for an action. Control rows include supported patterns. Unsupported patterns fail without falling back to blind input. Use `windows-vm-interactive-run` with a project-owned script for richer app-specific sequences.
 
-`windows-vm-interactive-run` launches the script on the signed-in desktop without foregrounding Fusion, captures stdout/stderr, and cleans up its temporary files. The bundled selectors target top-level windows returned by `windows`; custom scripts may be needed for application-specific child windows.
+`windows-vm-interactive-run` launches the script on the signed-in desktop without foregrounding Fusion, captures stdout/stderr, and cleans up its temporary files. For scripts that launch persistent children, detach or redirect each child's standard handles; inherited handles can keep the runner's output files locked. Verify the application after the runner exits. The bundled selectors target top-level windows returned by `windows`; custom scripts may be needed for application-specific child windows.
 
 | Exit | Meaning and next step |
 | --- | --- |

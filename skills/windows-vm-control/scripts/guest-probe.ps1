@@ -13,6 +13,7 @@ $codexPath = 'not_checked'
 $codexVersion = 'not_checked'
 $codexState = 'skipped'
 $codexPolicy = 'not_checked'
+$policyEvidence = $null
 
 if ($checkCodex) {
     $candidates = [System.Collections.Generic.List[string]]::new()
@@ -51,24 +52,10 @@ if ($checkCodex) {
     }
 
     if ($codexState -eq 'ok') {
-        $doctorOutput = @(& $codexPath doctor --json 2>$null)
-        $doctorExit = $LASTEXITCODE
-        $doctorText = $doctorOutput | Out-String
-        try {
-            $doctor = $doctorText | ConvertFrom-Json
-            $details = $doctor.checks.'sandbox.helpers'.details
-        } catch {
-            $details = $null
-        }
-        if ($doctorExit -eq 0 -and
-            $details.'approval policy' -eq 'Never' -and
-            $details.'filesystem sandbox' -eq 'unrestricted' -and
-            $details.'network sandbox' -eq 'enabled') {
-            $codexPolicy = 'ok'
-        } else {
-            $codexPolicy = 'mismatch'
-        }
+        $policyEvidence = Get-CodexPolicyEvidence -CodexPath $codexPath -WorkingDirectory $env:WINDOWS_VM_CONTROL_CWD
+        $codexPolicy = $policyEvidence.policy
     }
+
 }
 
 Write-Output "computer=$env:COMPUTERNAME"
@@ -76,4 +63,5 @@ Write-Output "user=$([System.Security.Principal.WindowsIdentity]::GetCurrent().N
 Write-Output "codex=$codexState"
 Write-Output "codex_path=$codexPath"
 Write-Output "codex_version=$codexVersion"
-Write-Output "codex_policy=$codexPolicy"
+if ($policyEvidence) { Write-CodexPolicyEvidence $policyEvidence }
+else { Write-Output "codex_policy=$codexPolicy" }

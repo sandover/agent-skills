@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""Create a named, guest-base-relative Git bundle without changing the source repo."""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+
+REF = 'refs/heads/candidate'
+FULL_OBJECT_ID = re.compile(r'(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\Z')
+
+
+class BundleError(Exception):
+    pass
+
+
+def run_git(repo, *arguments):
+    command = ['git']
+    if repo is not None:
+        command.extend(['-C', str(repo)])
+    command.extend(arguments)
+    environment = dict(os.environ, GIT_NO_REPLACE_OBJECTS='1', GIT_TERMINAL_PROMPT='0')
+    try:
+        result = subprocess.run(command, capture_output=True, text=True,
+                                errors='replace', env=environment)
+    except OSError as error:
+        raise BundleError(f"could not run Git: {error}") from error
+    return result
+
+
+def checked_git(repo, *arguments):
+    result = run_git(repo, *arguments)
+    if result.returncode:
+        detail = result.stderr.strip() or result.stdout.strip() or 'no diagnostic'
+        command = ' '.join(['git', *(str(part) for part in arguments)])
+        raise BundleError(f"{command} failed ({result.returncode}): {detail}")
+    return result.stdout.strip()
+
+
+def full_object_id(value, name):
+    if not FULL_OBJECT_ID.fullmatch(value):
+        raise BundleError(f'{name} must be a full 40- or 64-character commit ID')
+    return value.lower()
+
+
+def verify_commit(repo, object_id, name):
+    resolved = checked_git(repo, 'rev-parse', '--verify', f'{object_id}^{{commit}}').lower()
+    if resolved != object_id:
+        raise BundleError(f'{name} did not resolve to the supplied full commit ID')
+    return resolved
+
+
+def verify_ancestry(repo, base, candidate):
+    result = run_git(repo, 'merge-base', '--is-ancestor', base, candidate)
+    if result.returncode == 1:
+        raise BundleError('guest base is not an ancestor of candidate')
+    if result.returncode:
+        detail = result.stderr.strip() or result.stdout.strip() or 'no diagnostic'
+        raise BundleError(f'git merge-base --is-ancestor failed ({result.returncode}): {detail}')
+
+
+def create_bundle(source, candidate, base):
+    object_format = checked_git(source, 'rev-parse', '--show-object-format=storage')
+    if object_format not in {'sha1', 'sha256'}:
+        raise BundleError(f'unsupported Git object format: {object_format}')
+
+    try:
+        output_dir = Path(tempfile.mkdtemp(prefix='windows-source-'))
+    except OSError as error:
+        raise BundleError(f'could not create a unique output directory: {error}') from error
+
+    bare_repo = output_dir / 'export.git'
+    bundle = output_dir / 'candidate.bundle'
+    try:
+        checked_git(None, 'init', '--bare', '--quiet', f'--object-format={object_format}', str(bare_repo))
+        checked_git(bare_repo, 'fetch', '--no-tags', '--quiet', str(source), candidate)
+        checked_git(bare_repo, 'update-ref', REF, 'FETCH_HEAD')
+
+        received = checked_git(bare_repo, 'rev-parse', '--verify', f'{REF}^{{commit}}').lower()
+        if received != candidate:
+            raise BundleError('temporary repository received a different candidate commit')
+        verify_ancestry(bare_repo, base, REF)
+
+        if bundle.exists():
+            raise BundleError(f'refusing to overwrite output path: {bundle}')
+        checked_git(bare_repo, 'bundle', 'create', str(bundle), REF, f'^{base}')
+        checked_git(bare_repo, 'bundle', 'verify', str(bundle))
+        heads = checked_git(bare_repo, 'bundle', 'list-heads', str(bundle)).splitlines()
+        expected = f'{candidate} {REF}'
+        if heads != [expected]:
+            raise BundleError(f'bundle advertised unexpected heads: {heads!r}')
+
+        shutil.rmtree(bare_repo)
+        return {
+            'status': 'bundle_created',
+            'bundle_path': str(bundle),
+            'advertised_ref': REF,
+            'candidate_sha': candidate,
+            'guest_base_sha': base,
+        }
+    except (BundleError, OSError) as error:
+        try:
+            shutil.rmtree(output_dir)
+        except OSError as cleanup_error:
+            raise BundleError(
+                f'{error}; could not remove failed temporary directory {output_dir}: {cleanup_error}'
+            ) from error
+        if isinstance(error, BundleError):
+            raise
+        raise BundleError(f'could not prepare bundle output: {error}') from error
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('source_repo', help='path to a local Git repository')
+    parser.add_argument('candidate_sha', help='full commit ID to transfer')
+    parser.add_argument('guest_base_sha', help='full ancestor commit ID already present in the guest')
+    args = parser.parse_args()
+
+    try:
+        source = Path(args.source_repo).expanduser().resolve(strict=True)
+        if not source.is_dir():
+            raise BundleError('source repository path must be a directory')
+        candidate = full_object_id(args.candidate_sha, 'candidate SHA')
+        base = full_object_id(args.guest_base_sha, 'guest base SHA')
+        candidate = verify_commit(source, candidate, 'candidate SHA')
+        base = verify_commit(source, base, 'guest base SHA')
+
+        if candidate == base:
+            output = {
+                'status': 'already_present',
+                'bundle_path': None,
+                'advertised_ref': None,
+                'candidate_sha': candidate,
+                'guest_base_sha': base,
+            }
+        else:
+            verify_ancestry(source, base, candidate)
+            output = create_bundle(source, candidate, base)
+        print(json.dumps(output, sort_keys=True))
+        return 0
+    except (BundleError, OSError, ValueError) as error:
+        print(f'windows_source_bundle_error={error}', file=sys.stderr)
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
