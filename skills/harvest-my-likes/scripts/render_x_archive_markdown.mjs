@@ -5,7 +5,7 @@ Key exports: CLI that writes one Markdown archive file and local media files.
 Role: Keep archive presentation and image downloading deterministic outside the model.
 Invariants: Preserve post order, keep tweet metadata compact, write media under one
 attachments directory, and make Markdown point only at local attachment paths.
-The script accepts the JSON shape emitted by fetch_recent_liked_posts.sh.
+The script accepts a post array or an object with a posts array.
 */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -92,7 +92,7 @@ function localMediaName(post, media, index) {
 async function downloadMedia(url, destination) {
   const response = await fetch(url, {
     headers: {
-      "user-agent": "Mozilla/5.0 x-post-text-archive",
+      "user-agent": "Mozilla/5.0 harvest-my-likes",
       accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
     },
   });
@@ -127,7 +127,7 @@ async function main() {
   const lines = [
     `# Recent liked tweets - ${new Date().toISOString().slice(0, 10)}`,
     "",
-    "Harvested from X Likes via authenticated Chrome session. Newest-first as collected.",
+    "Posts from X in collection order.",
     "",
   ];
 

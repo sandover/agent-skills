@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harvest My Likes"
+  short_description: "Read X posts and recent likes in the browser"
+  default_prompt: "Use $harvest-my-likes to collect my recent X likes through Chrome or the built-in browser and add new posts to my scrapbook."
