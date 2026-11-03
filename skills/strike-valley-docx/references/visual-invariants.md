@@ -1,34 +1,37 @@
-# Visual Invariants
+# Visual specification
 
-These are the cues that make the output feel like a Strike Valley Studio document instead of a generic export.
+Use these studio defaults unless the user requests a different design.
 
-## Cover
+## Typography and color
 
-- The top horizontal rule should feel strong.
-- The rule should include the short right descender.
-- The rule must not read as slicing through the logo zone.
-- The title should sit close enough to the rule to feel connected.
-- The left brand block and right title block should feel intentionally balanced.
+- Eurostile / Eurostile Bold for titles, labels, and headings.
+- IBM Plex Sans for body and metadata; Inconsolata for URLs.
+- Warm off-white page color: `#FAF8F2`.
+- Deep navy cover logo when available.
 
-## Body
+## Cover and body
 
-- Long narrative sections stay single-column.
-- Bullets and numbered lists should survive without hand repair.
-- Headings should remain clearly branded and hierarchical.
+For reports, order the cover block, executive summary, then TOC. Omit a version
+number unless the user requests one. Use a strong branded top rule with its
+short right descender. Give the logo enough separation that the rule clears it
+visually, and keep the title close enough to the rule to feel connected. Balance
+the left brand block and right title block.
+
+Keep long narrative sections single-column. Preserve list hierarchy and clear,
+branded heading levels.
 
 ## TOC
 
-- The TOC should inherit the same visual language as the cover.
-- The `contents` label should be understated.
-- Page numbers must remain on the same line as entries.
-- Indentation should support readability, not distort the layout.
+Carry the cover's visual language into the TOC, including the rule and descender.
+Align the rule's start with the cover rule. Align the understated contents label
+and TOC entries with the body text column. Keep page numbers on the same line as
+their entries.
 
 ## Footer
 
-- Watermark and page number should read as a single footer system.
-- The watermark should be visible enough to feel intentional, but not loud.
-- The page number must sit on the same visual line as the watermark.
+Align the watermark and page number on one visual line. Keep the watermark
+visible and unobtrusive.
 
-## Decision Rule
-
-When there is a conflict between mathematical alignment and how the page reads at a glance, optimize for how it reads at a glance.
+When measured alignment conflicts with how the page reads at a glance, adjust
+for the reader's perception. Resolve drift in the renderer so later documents
+retain the same design.

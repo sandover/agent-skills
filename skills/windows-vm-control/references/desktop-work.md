@@ -1,6 +1,6 @@
 # Desktop work
 
-Use an existing project helper or the bundled commands for known, bounded actions. For unfamiliar UI, inspect the relevant window and controls; continue when the target and effect are clear. Hand off identity prompts or unresolved ambiguity, and weigh further discovery against the user's effort and any preference for unattended work. A short human action alone is not a reason to stop a self-contained workflow.
+Use an existing project helper or the bundled commands for known, bounded actions. For unfamiliar UI, inspect the relevant window and controls; continue when the target and effect are clear. Hand off unrelated identity prompts or unresolved ambiguity, and weigh further discovery against the user's effort and any preference for unattended work. A short human action alone is not a reason to stop a self-contained workflow.
 
 ## Hand a step to the user
 
@@ -35,7 +35,7 @@ Output is the interactive runner JSON envelope; its `output` contains `{items, t
 | --- | --- |
 | `0` | Task and cleanup completed; inspect the task output. |
 | `71` | Guest Operations failed; check that capability. |
-| `72` | No signed-in desktop; ask the user to sign in if the task requires one. |
+| `72` | No signed-in desktop; inspect the screen and follow the authorized VM sign-in guidance below. |
 | `75` | Launch, task, or result failed; read the error. |
 | `76` | Cleanup unconfirmed, including loss of Guest Operations; reconcile task processes before retrying. |
 | `124` | Timeout; inspect partial effects before repeating input. |
@@ -58,12 +58,12 @@ scripts/windows-vmrun typeKeystrokesInGuest 'literal text'
 
 If this returns `Insufficient permissions in the host operating system`, host sandbox escalation alone may not resolve it. Use `windows-vm-desktop set-value` or a supported UI Automation pattern when available. If raw input is essential, report the host-permission blocker for authorized diagnosis; do not repeatedly retry or assume which macOS permission is missing.
 
-`vmrun` has no reliable portable mouse-click or special-key notation. Use UI Automation patterns or a known guest-side helper. Guest pointer actions, including `SetCursorPos`, are acceptable when they do not move the Mac pointer or take Mac focus. If operating through Mac input is necessary, use existing consent or obtain it first.
+`vmrun` has no reliable portable mouse-click or special-key notation. Use UI Automation patterns or a known guest-side helper. Guest pointer actions, including `SetCursorPos`, are acceptable when they do not move the Mac pointer or take Mac focus. When the VM task needs Mac input, use it within the verified Fusion window under the task's existing authorization; do not ask for separate consent.
 
 `windows-vmrun doctor --require guest-ops` checks local configuration and credential availability. It does not prove a live interactive desktop; an actual probe does.
 
 ## Login and elevation
 
-Leave identity prompts for the user. Stored Guest Operations credentials enable the helper but do not authorize typing a password into Windows login, website login, or an MFA prompt.
+Authorization to manage this VM includes signing into its configured Windows account with configured credentials. Inspect the Windows sign-in screen before entering them, use a credential-aware helper, and verify the resulting desktop. Ask the user when credentials are unavailable or sign-in fails; never request a PIN or password in chat. Leave website login, passkeys, MFA, and unrelated identity prompts to the user.
 
 UAC may switch to a secure desktop that ordinary UI Automation cannot reach. Use a capture reported as `capture_source=fusion` to identify the program, publisher, and requested action. A desktop fallback cannot authorize a secure-desktop click. If the elevation and Mac input are already authorized, act on the verified prompt through the available Mac UI controls. Otherwise ask for the specific missing consent or have the user click it. If the prompt cannot be seen reliably or requests credentials, hand it to the user. Never approve by blind keystrokes.

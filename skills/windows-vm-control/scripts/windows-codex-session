@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import queue
+import re
 import signal
 import subprocess
 import sys
@@ -267,6 +268,21 @@ class WindowsCodexController:
     def initialize(self) -> None:
         self.request("initialize", {"clientInfo": CLIENT_INFO})
         self.notify("initialized", {})
+        catalog = self.request("model/list", {"limit": 100, "includeHidden": False})
+        models = catalog.get("data", [])
+        candidates = [item for item in models if re.fullmatch(r"gpt-\d+(?:\.\d+)*-sol", item.get("model", "")) and tuple(int(part) for part in item["model"][4:-4].split(".")) >= (6, 1)]
+        if self.args.model:
+            selected = next((item for item in models if item.get("model") == self.args.model), None)
+        else:
+            selected = max(candidates, key=lambda item: tuple(int(part) for part in item["model"][4:-4].split(".")), default=None)
+        if selected is None:
+            raise ControllerFailure("the requested model or a current Sol model is unavailable")
+        efforts = [item.get("reasoningEffort") for item in selected.get("supportedReasoningEfforts", [])]
+        if self.args.reasoning_effort not in efforts:
+            raise ControllerFailure(f"{selected['model']} does not support {self.args.reasoning_effort} reasoning")
+        self.model = selected["model"]
+        self.reasoning_effort = self.args.reasoning_effort
+        thread_options = {"cwd": self.args.cwd, "model": self.model, "config": {"model_reasoning_effort": self.reasoning_effort}}
         snapshot = self.state.snapshot()
         resumed = bool(snapshot.get("threadId"))
         with self.pending_lock:
@@ -275,10 +291,12 @@ class WindowsCodexController:
         if resumed:
             result = self.request(
                 "thread/resume",
-                {"threadId": snapshot["threadId"], "cwd": self.args.cwd},
+                {"threadId": snapshot["threadId"], **thread_options},
             )
         else:
-            result = self.request("thread/start", {"cwd": self.args.cwd})
+            result = self.request("thread/start", thread_options)
+        if result.get("model") != self.model or result.get("reasoningEffort") != self.reasoning_effort:
+            raise ControllerFailure("app-server did not apply the selected model and reasoning effort")
         thread = result.get("thread")
         if not isinstance(thread, dict) or not thread.get("id"):
             raise ControllerFailure("app-server returned no thread identity")
@@ -286,6 +304,8 @@ class WindowsCodexController:
         self.state.update(connectionStatus="connected")
         self.emit_controller(
             "ready",
+            model=self.model,
+            reasoningEffort=self.reasoning_effort,
             resumed=resumed,
             stateFile=str(self.state.path),
             threadId=thread["id"],
@@ -329,6 +349,8 @@ class WindowsCodexController:
                 {
                     "threadId": snapshot["threadId"],
                     "input": [{"type": "text", "text": text}],
+                    "model": self.model,
+                    "effort": self.reasoning_effort,
                 },
             )
         finally:
@@ -683,6 +705,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--state", required=True, help="absolute host path for controller state")
     parser.add_argument("--ssh", default=configured_ssh_alias())
     parser.add_argument("--handoff", help="UTF-8 file used to start the first turn")
+    parser.add_argument("--model", help="explicit user override; otherwise select the newest available Sol")
+    parser.add_argument("--reasoning-effort", default="low", help="explicit user override; default low")
     parser.add_argument("--new", action="store_true", help="start a new thread and replace controller state")
     parser.add_argument(
         "--readiness-wait",

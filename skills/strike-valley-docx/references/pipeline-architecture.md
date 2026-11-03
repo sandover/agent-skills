@@ -1,45 +1,16 @@
-# Pipeline Architecture
+# Pipeline architecture
 
-## Goal
+The current Markdown workflow uses `scripts/render_branded_docx.py`, which
+builds the document with `python-docx` and uses Pillow for image assets. The
+renderer owns shared typography, page layout, and branding. Markdown supplies
+content and structure; command-line arguments supply document metadata.
 
-Turn Markdown into polished, editable Strike Valley Studio `.docx` documents with minimal manual cleanup.
+The renderer exports a sibling PDF through Pages unless the caller passes
+`--no-pdf`. Pages also supplies the visual check for its own DOCX import behavior.
+Keep the DOCX editable and preserve the Markdown for future revisions.
 
-## Preferred v1 pipeline
-
-1. Author in Markdown with stable heading and list structure.
-2. Convert Markdown to `.docx` with `pandoc`, using a branded `reference.docx`.
-3. Post-process the `.docx` with Python code under `uv` when `pandoc` alone is not enough.
-4. Open in Pages or Word only for spot checks and rare judgment calls, not routine formatting.
-
-## Why this is the preferred v1
-
-- Keeps Markdown as the source of truth.
-- Produces editable `.docx`, not a dead-end PDF.
-- Avoids LibreOffice.
-- Pushes recurring formatting rules into a reusable template.
-- Gives a clean path to later automation for branding, TOC, page numbers, and metadata.
-
-## When to move beyond `pandoc`
-
-Use post-processing or a template-first generator when any of these happen:
-
-- Lists come through incorrectly.
-- Tables lose intended structure.
-- Headers/footers/page numbers need repeatable branding.
-- The first page or section openers require consultancy-specific layout.
-- Manual cleanup in Pages takes more than a few minutes.
-
-## Likely v1 components
-
-- `assets/reference.docx`
-- `assets/logo.*`
-- `scripts/render_markdown_docx.py`
-- optional `scripts/postprocess_docx.py`
-
-## Likely v2 components
-
-- frontmatter-driven document metadata
-- optional table of contents insertion
-- cover-page variants
-- proposal/report/memo presets
-- stronger structural validation for lists, tables, and heading hierarchy
+Place changes where they belong: content in Markdown, document-specific values
+in render inputs, shared appearance and compatibility fixes in the renderer.
+Use the [quality bar](quality-bar.md) and its fixtures to check the affected
+output. Add another conversion stage only when a demonstrated document need
+requires it.

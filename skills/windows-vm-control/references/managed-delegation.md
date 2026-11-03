@@ -19,6 +19,8 @@ scripts/windows-codex-session \
 
 Run in a persistent execution session that keeps stdin writable. With an exec tool, retain its returned session ID and send newline-terminated actions using its stdin tool. Do not run in a mode that closes stdin immediately. Stdout carries app-server JSONL plus `controller/*` events; save it when needed for evidence or reconnect diagnosis.
 
+The controller selects the newest visible Sol model from `model/list` and sets low reasoning effort on new and resumed chats and each follow-up turn. It reports the selected model and effort in `controller/ready`. It stops if that model does not support low effort. Use `--model` or `--reasoning-effort` only for an explicit user override.
+
 The state file stores identifiers/lifecycle state, not prompts or command output. If it names an existing thread, the controller resumes that thread and reconciles its turn state. `--new` intentionally replaces local controller state with a new thread; it does not delete the old thread.
 
 The helper waits for Codex readiness and checks the approved policy described in [command work](command-work.md#delegate-one-outcome). `--readiness-wait` changes the independent startup allowance. `--ssh` selects an authorized alias override.

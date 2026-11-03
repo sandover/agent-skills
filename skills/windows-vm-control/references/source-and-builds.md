@@ -1,8 +1,8 @@
 # Source and builds
 
-Establish the intended source and the installed application's architecture before choosing a build. Guest OS, application, and artifact architectures are distinct: an ARM64 Windows VM can host x86 Acrobat, which needs an x86 plugin. That result does not prove an x64 release build.
+Establish the source you intend to test and any architecture the task depends on. Inspect the VM's existing checkout and preserve its unrelated changes. For uncommitted work, a task-owned copy or patch can be enough; record the source snapshot and changed files so the result can be traced back. Use an exact commit and isolated worktree when revision identity is part of the result or when the existing checkout must remain untouched. Check guest OS, application, and artifact architectures separately when they affect the outcome.
 
-## Put an exact revision in Windows
+## When an exact revision is required
 
 Prefer the repository's existing remote when it already contains the revision. Fetch and verify the full commit ID. Use a new detached worktree for a build-only task, or a named task branch/worktree when the guest should implement changes. A dirty primary checkout can remain untouched while a new worktree is added.
 

@@ -54,11 +54,15 @@ for raw in sys.stdin:
         emit({"id":request_id,"result":{"userAgent":"stub","platformFamily":"windows","platformOs":"windows"}})
     elif method == "initialized":
         continue
+    elif method == "model/list":
+        versions = [] if mode == "no_sol" else ["5.6"] if mode == "old_catalog" else ["5.6", "6.1", "6.2"]
+        efforts = [{"reasoningEffort":"low"}] if mode != "no_low" else [{"reasoningEffort":"high"}]
+        emit({"id":request_id,"result":{"data":[{"model":"gpt-"+version+"-sol","supportedReasoningEfforts":efforts} for version in versions],"nextCursor":None}})
     elif method == "thread/start":
-        emit({"id":request_id,"result":{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[]}}})
+        emit({"id":request_id,"result":{"model":message["params"]["model"],"reasoningEffort":message["params"]["config"]["model_reasoning_effort"],"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[]}}})
         emit({"method":"thread/started","params":{"thread":{"id":"thread-1"}}})
     elif method == "thread/resume":
-        emit({"id":request_id,"result":{"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[{"id":"turn-old","status":resumed_status,"items":[]}]}}})
+        emit({"id":request_id,"result":{"model":message["params"]["model"],"reasoningEffort":message["params"]["config"]["model_reasoning_effort"],"thread":{"id":"thread-1","status":{"type":"idle"},"turns":[{"id":"turn-old","status":resumed_status,"items":[]}]}}})
     elif method == "turn/start":
         request_before_response = mode in {"approval", "input", "unsupported"}
         if not request_before_response:
@@ -210,6 +214,26 @@ class ControllerTests(unittest.TestCase):
 
     def logged_methods(self) -> list[str | None]:
         return [json.loads(line).get("method") for line in self.log.read_text(encoding="utf-8").splitlines()]
+
+    def test_latest_sol_and_low_replace_old_defaults_on_start_resume_and_followup(self) -> None:
+        first = self.run_controller("complete")
+        self.assertEqual(first.returncode, 0, first.stderr + first.stdout)
+        second = self.run_controller("complete", [{"action":"start","text":"Continue"}], handoff=False)
+        self.assertEqual(second.returncode, 0, second.stderr + second.stdout)
+        messages = [json.loads(line) for line in self.log.read_text().splitlines()]
+        for message in messages:
+            if message.get("method") in {"thread/start", "thread/resume", "turn/start"}:
+                self.assertEqual(message["params"]["model"], "gpt-6.2-sol")
+                effort = message["params"].get("effort") or message["params"]["config"]["model_reasoning_effort"]
+                self.assertEqual(effort, "low")
+
+    def test_missing_sol_or_low_stops_before_a_turn(self) -> None:
+        for mode in ("no_sol", "no_low", "old_catalog"):
+            with self.subTest(mode=mode):
+                self.log.write_text("")
+                result = self.run_controller(mode)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("turn/start", self.logged_methods())
 
     def test_completed_turn_uses_authoritative_item_and_turn(self) -> None:
         result = self.run_controller("complete")

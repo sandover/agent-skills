@@ -1,40 +1,26 @@
-# Quality Bar
+# Quality bar
 
-Do not call the output good enough if any of these are true:
+A finished document preserves the source's structure, follows the
+[visual specification](visual-invariants.md), and remains easy to edit in Pages
+or Word. Lists must retain their items, numbering, and hierarchy; tables must
+fit and preserve readable alignment; headings and page furniture must remain
+consistent.
 
-- Bullet lists flatten, split, or require hand-fixing item by item.
-- Numbered lists restart incorrectly or lose hierarchy.
-- Heading styles are generic or inconsistent.
-- Tables overflow, collapse, or lose alignment.
-- Page numbers, header/footer, or logo placement look accidental.
-- The document still looks like default `pandoc`.
+Choose checks from the structures and layout you touched. Inspect representative
+pages in Pages when appearance matters. A successful render alone cannot prove
+visual quality.
 
-## Acceptable manual cleanup
+Use these fixtures for renderer work:
 
-- typo fixes
-- one-off judgment calls on section breaks
-- small cover-page tweaks
+- [Report](../fixtures/GTM-AI-Assessment-Report.md): cover, executive summary,
+  TOC, headings, and lists.
+- [Footer](../fixtures/footer-debug.md): footer baseline, watermark visibility,
+  and page-number alignment.
+- [Proposal metadata](../fixtures/keyloop-proposal-cover.yaml): top matter for
+  the legacy cover renderer.
 
-## Unacceptable manual cleanup
+Include nested lists or a table in the check when the change affects them.
 
-- fixing every bullet
-- redoing heading styles paragraph by paragraph
-- reformatting all tables by hand
-- rebuilding page furniture manually
-- restyling every exported document from scratch
-
-## Visual targets
-
-- body font and heading font follow the template exactly
-- branded page furniture is present and unobtrusive
-- spacing feels intentional and consultancy-grade
-- TOC, when enabled, is structurally correct
-- the document remains easy to edit in Pages or Word
-
-## Test fixtures to keep using
-
-- a report with many nested bullets
-- a document with a table of contents
-- a report with multiple heading levels
-- a document with at least one table
-- a proposal-style document with a custom first page
+Local typo fixes, section-break choices, and small cover adjustments can suit
+an individual document. Repeated repairs to lists, headings, tables, or page
+furniture belong in the renderer. Keep the workflow reproducible from source.

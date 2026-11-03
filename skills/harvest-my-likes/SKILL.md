@@ -5,19 +5,25 @@ description: Read X/Twitter posts or collect recent likes through Chrome or the 
 
 # Harvest My Likes
 
+Capture a faithful, traceable record of the requested posts or likes. Preserve
+who said what, the full content, source links, and the user's existing notes.
+Choose browser reads that resolve missing content without collecting unrelated
+timeline material.
+
 Use Chrome or the built-in browser through the agent's browser tools. Follow the user's browser choice; otherwise prefer a signed-in session. Do not use `agent-browser`. If neither browser has access, ask the user to sign in.
 
 ## Read posts
 
 Open the supplied post URLs; for a bare status ID, use `https://x.com/i/status/ID`.
 
-- Match the target status ID so replies and quoted posts do not replace the requested post.
-- Expand truncated text and open longform articles to capture the full body, not just the preview.
-- Keep quoted posts separate, with their author and source link when available.
-- Preserve paragraphs, mentions, emoji, and working link destinations. Avoid inserting line breaks between inline spans or copying shortened display URLs.
-- For an unavailable post, report the URL and the access or loading problem. Do not infer its content from nearby posts.
+Treat the status ID as the post's identity. Keep replies and quoted posts
+separate from the requested post, with their own attribution and links. Read
+through truncation and article previews to capture the full requested body.
+Preserve paragraphs, mentions, emoji, and working link destinations; inline
+spans and shortened display URLs can distort an otherwise correct extraction.
 
-Return the content the user requested. For larger batches, use targeted browser reads to keep unrelated timeline content out of context.
+If a post is unavailable, report its URL and the access or loading problem.
+Return only content you could establish from the requested source.
 
 ## Collect likes
 

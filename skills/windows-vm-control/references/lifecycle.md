@@ -43,13 +43,13 @@ If boot/readiness is visibly progressing, allow another bounded wait. Otherwise 
 
 ## Sign in only when the task needs a desktop
 
-SSH can work before Windows sign-in. For visible application work, inspect the screen and try the [desktop helper](desktop-work.md#inspect-the-windows-desktop). A missing interactive desktop (`72`) means the helper did not find the expected desktop process. Inspect the screen: ask for sign-in when it shows a sign-in prompt; otherwise diagnose that desktop/session without installing software or changing credentials.
+SSH can work before Windows sign-in. For visible application work, inspect the screen and try the [desktop helper](desktop-work.md#inspect-the-windows-desktop). A missing interactive desktop (`72`) means the helper did not find the expected desktop process. Inspect the screen: when it shows a Windows sign-in prompt, use configured credentials if the user authorized you to manage this VM; otherwise ask for sign-in. Diagnose other desktop/session failures without installing software or changing credentials.
 
-Stop automated input and ask:
+If sign-in needs user help, stop automated input and ask:
 
 > Windows is ready for sign-in. Please enter your PIN in the Windows VM and leave it at the desktop; tell me when it is ready.
 
-Never request the PIN in chat, type a stored password into the prompt, or enable automatic login. Bring the verified VM window forward using existing input consent when needed. After the user replies, verify the desktop with one narrow inspection and continue. After a restart, rediscover PIDs/window handles; after resume, verify their live identity before reuse.
+For an authorized VM, prefer signing into the configured Windows account through a credential-aware helper. Keep secrets out of chat, logs, screenshots, and handoffs. If credentials are unavailable or sign-in fails, use the handoff above. Do not enable automatic login unless the user explicitly requests it. Bring the verified VM window forward when the authorized VM task needs it; no separate input consent is required. Verify the desktop with one narrow inspection and continue. After a restart, rediscover PIDs/window handles; after resume, verify their live identity before reuse.
 
 ## Shut down and verify
 

@@ -58,13 +58,14 @@ If a desktop step is needed, report the exact step for the user and finish this 
 ```bash
 scripts/windows-codex-run \
   --cwd 'C:\src\project-proof' \
+  --model gpt-6.1-sol --reasoning-effort low \
   --timeout 900 \
   < /private/tmp/windows-handoff.txt
 ```
 
 Keep the runner in an execution session you can poll or interrupt. Retain stdout (JSONL events) and stderr (readiness, process, and cleanup information) when needed for follow-up. Poll at meaningful intervals and keep the user informed during long builds.
 
-The runner locates Codex, waits for it to become ready, and checks its active policy before launching. It owns these startup checks; do not add a separate all-capability preflight. `--readiness-wait` controls startup allowance, while `--timeout` bounds the assignment. Use `--allow-non-git` only for an intentional non-checkout directory. Preserve the configured model and reasoning unless an authorized task choice requires an override.
+The runner locates Codex, waits for it to become ready, and checks its active policy before launching. It owns these startup checks; do not add a separate all-capability preflight. `--readiness-wait` controls startup allowance, while `--timeout` bounds the assignment. Use `--allow-non-git` only for an intentional non-checkout directory. Follow the [Windows Codex model preference](../SKILL.md#windows-codex-model). For a bounded run, pass `--model <latest-sol-id> --reasoning-effort low` explicitly. The managed controller resolves the available catalog automatically.
 
 The bundled runners currently require the approved VM profile: `approval_policy = "never"` and `sandbox_mode = "danger-full-access"`. The shared check reads the sandbox diagnostic in the requested working directory and reports the observed approval, filesystem, and network fields. `mismatch` means complete, readable fields differ from this profile; `failed` means the sandbox check could not establish them. Both stop the runner, with `codex_policy_reason` and `codex_doctor_exit` explaining why. A healthy sandbox check remains usable when an unrelated doctor check makes the overall exit nonzero. This is a local runner requirement, not a reason to weaken an arbitrary machine's settings. Report the mismatch and use an already-authorized direct route if suitable; do not override the policy on the command line or silently rewrite configuration.
 
