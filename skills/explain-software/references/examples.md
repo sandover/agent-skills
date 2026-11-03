@@ -1,9 +1,9 @@
 # Examples
 
-Most of these come from real sessions where Brandon pushed back on an
-explanation. Each shows the draft that failed, why it failed, and a rewrite.
-The rewrites show a register to aim for. Check the facts of the actual system
-before you write your own.
+These cases come from real sessions where Brandon pushed back on an
+explanation, and they span several kinds of work on purpose. Each shows the
+draft that failed, why it failed, and a rewrite. Take the move each rewrite
+makes and apply it to your own system; check its facts before you write.
 
 ## A status line in private words
 
@@ -30,9 +30,47 @@ operations verbs; nothing says what a user would notice.
 > first. It has to know how to record what failed model calls cost before the
 > matching service starts making them.
 
+## Measurements without meaning
+
+In a color-theme project, Brandon asked: "without jargon, tell me what we've
+got here and why this set of colors."
+
+> All twelve are six now. Most are roughly twice as separated as Solarized,
+> with 55° of clearance around the ground instead of 36. Contrast unchanged at
+> 4.71–4.77. Merges: errors + preprocessor share a colour, numbers + type
+> names share another.
+
+The numbers are accurate, and none of them says what Brandon would see on
+screen.
+
+> Each theme now uses six accent colors where Solarized uses eight. Fewer
+> colors can sit farther apart, so two of them are harder to confuse: in most
+> themes, the two most similar accents differ about twice as much as
+> Solarized's closest pair. To get down to six, errors and preprocessor lines
+> now share a color, and so do numbers and type names. Text is exactly as
+> readable against the background as before.
+
+## The heart of a long story
+
+Brandon asked why a research job had run for four hours. The draft listed
+every part of the job: the writing calls, the local scoring, the remaining
+model calls at 18 seconds each, and the agent's own work. Brandon replied:
+"from this description, i don't understand why it was four hours. give me the
+heart of it."
+
+> Most of the time went to the agent running the experiment. At its highest
+> effort setting, it writes code, tests it, and reviews it between every step.
+> The model calls added the rest: each took about 18 seconds, against 4 in
+> earlier runs, because the command-line tool spends most of each call
+> starting up.
+
+Name the one or two causes that ate the time, then stop. The full accounting
+can follow if Brandon asks.
+
 ## A principle with nothing to hold
 
-Brandon said: "this is abstract, let's bring this back down to earth."
+In a research project, Brandon said: "this is abstract, let's bring this back
+down to earth."
 
 > An abstraction flattens the curve when it removes steps, but only if what's
 > left is something the model can do reliably.
@@ -60,39 +98,16 @@ Brandon asked: "you haven't explained the failure in plain language, why not?"
 > connected past the old five-minute limit. Next I'd find out why strip 13 is
 > slow before raising the limit.
 
-## Data that skips the question
-
-Brandon asked: "tldr how have we improved the pipeline results, in terms of
-false negatives and false positives?" The draft answered with a table of time
-and cost for three test calls.
-
-> On the three test pages, the new pipeline copied all seven annotations it
-> should have and added none: no missed copies, no wrong copies. We haven't run
-> the old pipeline on these pages, so I can't say yet how much better that is.
-> A run of the old pipeline on the same pages would answer it.
-
-Use the reader's frame for accuracy. "Missed copies" and "wrong copies" stay
-concrete where "recall" and "precision" ask for translation.
-
 ## Diagram labels that hide what happens
 
 A sequence diagram showed a person describing a business process to a chat
-model, which then sent "Read workflow" to a server. Brandon asked why "describe
-a process" became "read workflow," and said what happens: the model turns the
-person's description into a formal workflow, which the server saves as a JSON
-definition. The arrow labels should tell that story: "describes the process,"
-"turns the description into a workflow definition," "checks and saves the
-definition." The same review removed a browser page and a storage box that
-added nothing to the point.
-
-## A timing picture that compares
-
-Brandon wanted to see where a pipeline spends its time and compare two
-versions. The draft had a reference table, several layers of introduction, and
-two timing charts built differently. Brandon described the picture: every page
-of the document as its own row, time running left to right, both versions on
-the same scale. Read across a row to follow one page; read down a column to see
-everything happening at one moment. The table went away.
+model, which then sent "Read workflow" to a server. Brandon asked why
+"describe a process" became "read workflow," and said what happens: the model
+turns the person's description into a formal workflow, which the server saves
+as a definition. The arrow labels should tell that story: "describes the
+process," "turns the description into a workflow definition," "checks and
+saves the definition." The same review removed a browser page and a storage
+box that added nothing to the point.
 
 ## Reporting a change: shared Box access
 
