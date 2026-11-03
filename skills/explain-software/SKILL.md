@@ -38,8 +38,9 @@ The most common failure is a report written in the agent's working vocabulary.
 three private terms and two operations verbs into nine words, and Brandon had
 to ask what it meant.
 
-Test each sentence against a capable engineer who joined the project today.
-Name a thing by what it does, and add its project name when Brandon will need
+When Brandon arrives cold, test each sentence against a capable engineer who
+joined the project today. Within a conversation, build on what you and Brandon
+have already established. Name a thing by what it does, and add its project name when Brandon will need
 the name later. Choose the words a person would say aloud over operations
 jargon. Write whole sentences, because a clipped fragment makes the reader
 rebuild what you meant.
@@ -50,7 +51,8 @@ Follow something Brandon can picture: a person clicking a button, a file moving,
 a request going to another service, a value saved in a database. Say who acts,
 on what, and what happens next.
 
-Give every general claim a concrete case. "An abstraction flattens the curve
+Give an abstract idea a concrete case when the reader needs one to picture or
+test it. "An abstraction flattens the curve
 when it removes steps" left Brandon nothing to hold. A line that landed carried
 its own instance: "Names do this: you look up a variable instead of working out
 its stack position." Take the case from the real system when you can, and say
@@ -63,9 +65,9 @@ the clicks.
 
 ## Explain against the purpose
 
-Start from what the system is for. Today's code is one attempt at that purpose,
-and it may be recent and wrong, so treat it as evidence and keep the goal as the
-authority. When you propose a design, name the goal it serves and hold a clear
+Start from what the system is for. Use the goal to judge the design and
+inspected evidence to explain its behavior, and make any gap between them
+clear. When you propose a design, name the goal it serves and hold a clear
 opinion.
 
 Keep the decisions that explain behavior. A number or rule that appears with no
@@ -105,13 +107,15 @@ Length follows the question. A one-line status can do everything this skill
 asks.
 
 Before sending, read the draft as Brandon arriving cold. Does the first sentence
-answer the question? Does any word depend on this session's history? Does each
-general claim have a case? Could Brandon retell it to a teammate in two
+answer the question? Does any word depend on history Brandon didn't see? Can
+Brandon picture each abstract idea? Could Brandon retell it to a teammate in two
 sentences?
 
-When Brandon says "plain English," "tldr," or "I don't understand," the draft
-used private words or skipped the concrete case. Start again from the question;
-trimming the same text rarely fixes it.
+Treat Brandon's reply as evidence about what to change. "I don't understand"
+or "plain English" usually points to private words or a missing case; "tldr"
+may only ask for less. A shorter version still has to be true and still names
+what's untested or unfinished. When the words are the problem, start again from the
+question, since trimming the same text rarely fixes it.
 
 [Examples](references/examples.md) holds before-and-after cases from several
 kinds of work. [Sources](references/sources.md) records the ideas behind this

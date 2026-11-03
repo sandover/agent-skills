@@ -123,8 +123,9 @@ order to follow: the problem, the change, then what happens.
 > later. It saves them, encrypted, under your identity. When Review needs a
 > file, it asks the service, which fetches the file with your keys.
 >
-> The keys never leave the service. So one place handles renewal, and the tools
-> share your connection without each holding its own.
+> Launcher and Review never receive your Box keys. The shared service keeps
+> them and uses them when it contacts Box. So one place handles renewal, and
+> the tools share your connection without each holding its own.
 
 A picture for this explanation should show where the keys stay. Arrows mean
 requests; the picture leaves out the approval flow and the returning file.
