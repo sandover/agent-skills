@@ -18,49 +18,43 @@ person. Keep the features, style, and scope the user asked for.
 
 ## Cut
 
-- Open with the title and the content. Remove the stacked layers above it:
-  eyebrows, provenance lines, headline cards, intro paragraphs, and summary
-  blocks.
-- Drop a section header that covers one item, and a border or card that
-  separates nothing.
-- Delete copy that repeats what the picture already shows. "Nearly three
-  hours" next to a timeline adds nothing. So does a "What this shows" caption.
-- Leave off implementation details this reader won't use. "That run came
-  before Sol judgment" was noise on a page about timing. On a page built to
-  compare models, the model name belongs.
-- Put detail where it belongs. A small figure beside the row it describes beats
-  a summary block above the chart. Fuller detail can wait behind a hover or a
-  click.
+- Open with the content. Remove layers that stand between the reader and it,
+  such as eyebrows, intro paragraphs, and summary blocks.
+- Drop structure that organizes nothing: a header over a single item, a border
+  that separates nothing.
+- Delete copy that says what the page already shows.
+- Leave off details this reader won't use, including how the page or system
+  was built.
+- Put each detail next to what it describes, and let fuller detail wait behind
+  a hover or a click.
 
 ## Write copy for the person
 
 Read each label and sentence as the person in that situation, who knows only
-what the screen has shown them. "Review another event" means nothing to a
-study participant. A Copy button should say what it copies. Write friendly,
-plain words, and stop when the person has what they need to act.
+what the screen has shown them so far. Write friendly, plain words, and stop
+when the person has what they need to act.
 
-For flows, work out what the site knows and what the person knows at each
-step, and make each screen claim only what the site knows then. Keep that
+There are two kinds of state to reason about, and you must reason about both:
+the state of the website or UI system, and the state of mind of the user, and
+what they know and expect at each step. Use that reasoning, but keep the
 reasoning, and any test or preview controls, off the client-facing page.
 
 ## Keep it legible
 
-Spare pages still need clear structure. A panel that opens over a list should
-stand apart from it. A command should look different from the message beside
-it. New elements should match the page's existing type, color, and spacing, or
-they look tacked on. Reuse familiar patterns and existing components, and keep
-the main path obvious. Use motion only to show a change or give feedback.
+Spare pages still need clear structure. Make different kinds of things look
+different, so an overlay, a control, and the content around them never blend.
+Match the page's existing type, color, and spacing, so new elements belong.
+Reuse familiar patterns and keep the main path obvious. Use motion only to
+show a change or give feedback.
 
-When a design falls flat, rethink the form before decorating it. Ask whether a
-line needs to be a line at all. Aim for pages that feel precise and look good.
-For charts, follow Tufte: label the data directly in place of a legend, and
-drop gridlines, borders, and shading that carry no information.
+When a design falls flat, rethink the form before decorating it. For charts,
+follow Tufte: label data directly, and drop marks that carry no information.
 
 ## Build small
 
-Choose the smallest readable implementation that does the job. Prefer system
-fonts to loaded ones, plain HTML and CSS to a framework, and existing code to a
-new dependency.
+Choose the smallest readable implementation that does the job. Prefer what the
+platform and the existing code already provide to new fonts, frameworks, and
+dependencies.
 
 ## Check the result
 
