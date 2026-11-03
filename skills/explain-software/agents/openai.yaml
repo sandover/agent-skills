@@ -1,0 +1,6 @@
+interface:
+  display_name: "Explain Software"
+  short_description: "Build a concrete working model of software"
+  default_prompt: "Use $explain-software to help me understand this software and its important design choices."
+policy:
+  allow_implicit_invocation: true
