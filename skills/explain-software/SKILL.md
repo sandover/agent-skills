@@ -103,6 +103,12 @@ They name the problem, the change, and then walk through what happens:
 "Previously every tool managed its own Box connection. I built one shared Box
 service. When you click Connect Box, ..."
 
+Use a list for parallel things of one kind: three problems, two options, the
+steps of a procedure. Introduce it with a sentence that says what it holds
+without repeating the items. Put the most important item first, or follow the
+order of the steps. Put each item's point in its first words. Write each item
+as a whole thought, with matching grammar across items. Keep the reasoning that connects ideas in prose around the list.
+
 Length follows the question. A one-line status can do everything this skill
 asks.
 

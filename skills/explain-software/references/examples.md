@@ -67,6 +67,28 @@ heart of it."
 Name the one or two causes that ate the time, then stop. The full accounting
 can follow if Brandon asks.
 
+## A paragraph that wanted to be a list
+
+From a status update on how a tool names its runs. The paragraph reads well,
+but it holds three separate problems, and the reader has to dig them out.
+
+> Here's what was wrong. Launcher named each run as target name + version +
+> timestamp. Since an Oct 22 update, the run list cuts long names short, so the
+> timestamp got hidden and retries looked identical. The names also left out
+> the donor, and when a target name already ended in a version, the version
+> showed up twice, as in "Brochure v60_v60".
+
+> The old names had three problems:
+>
+> - **Retries looked identical.** Since an Oct 22 update, the run list cuts
+>   long names short, which hides the timestamp at the end.
+> - **The donor was missing.** A name showed only the target document.
+> - **Versions could double.** A target whose name already ended in a version
+>   came out as "Brochure v60_v60".
+
+The lead-in says what the list holds, each item opens with its problem in
+plain words, and the cause stays inside the item it explains.
+
 ## A principle with nothing to hold
 
 In a research project, Brandon said: "this is abstract, let's bring this back
